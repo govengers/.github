@@ -37,9 +37,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Go minor version from go.mod
+        id: go
+        shell: bash
+        run: echo "version=$(awk '/^go / { split($2, parts, "."); print parts[1] "." parts[2] ".x" }' go.mod)" >> "$GITHUB_OUTPUT"
+
+      # The newest patch of the module's minor version, so govulncheck sees a patched standard library (TCH-001).
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.version }}
 
       - uses: extractions/setup-just@v4
 
