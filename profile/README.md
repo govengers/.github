@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/govengers/.github/main/profile/gophers-assemble.jpg" alt="Go gophers assemble" width="800"></p>
+
 # govengers
 
 Boring, well-tested Go libraries for building web services: configuration, authentication, caching, logging, real-time APIs and AI tooling. Every library follows the same [standards](https://github.com/govengers/standards) and runs the same CI.

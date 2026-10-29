@@ -1,3 +1,5 @@
+<p align="center"><img src="profile/gophers-assemble.jpg" alt="Go gophers assemble" width="800"></p>
+
 # govengers/.github
 
 Shared GitHub configuration for the govengers org: the [org profile](profile/README.md), the reusable CI workflow for Go libraries and its starter template.
