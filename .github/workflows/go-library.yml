@@ -1,0 +1,123 @@
+# Reusable CI for govengers Go libraries. It runs the library's own justfile recipes, so CI and a
+# local `just check` run the same commands (standards TCH-005), and publishes README badges.
+#
+# Contract with the calling repo:
+#   just lint       golangci-lint with the repo's .golangci.yml
+#   just test       unit tests with -race; writes sandbox/unit.json (go test -json) and sandbox/unit.cover,
+#                   fails below the coverage threshold (TST-010)
+#   just test-e2e   end-to-end tests (build tag e2e); writes sandbox/e2e.json (TST-011)
+#   just vulncheck  govulncheck in text mode (TCH-008)
+name: Go library
+
+on:
+  workflow_call:
+    inputs:
+      golangci-lint-version:
+        description: golangci-lint release that `just lint` runs
+        type: string
+        default: v2.11.4
+      e2e:
+        description: run `just test-e2e`
+        type: boolean
+        default: true
+      badges:
+        description: publish unit test, e2e test and coverage badges to the badges branch on pushes to the default branch
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint, test, e2e, vulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: extractions/setup-just@v4
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          install-only: true
+
+      - name: Lint
+        run: just lint
+
+      - name: Unit tests
+        run: just test
+
+      - name: End-to-end tests
+        if: inputs.e2e
+        run: just test-e2e
+
+      - name: Vulnerability scan
+        run: just vulncheck
+
+      - name: Build badges
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sandbox/badges
+
+          passed() { jq -s '[.[] | select(.Action == "pass" and .Test != null)] | length' "$1"; }
+          badge() { jq -n --arg label "$2" --arg message "$3" --arg color "$4" \
+            '{schemaVersion: 1, label: $label, message: $message, color: $color}' > "sandbox/badges/$1.json"; }
+
+          unit_tests=$(passed sandbox/unit.json)
+          coverage=$(go tool cover -func=sandbox/unit.cover | awk '/^total:/ { sub("%", "", $3); print $3 }')
+          coverage_color=$(awk -v coverage="$coverage" 'BEGIN { print (coverage >= 80 ? "brightgreen" : (coverage >= 60 ? "yellow" : "red")) }')
+          badge unit-tests "unit tests" "$unit_tests passed" brightgreen
+          badge coverage "coverage" "$coverage%" "$coverage_color"
+
+          e2e_tests="-"
+          if [ -f sandbox/e2e.json ]; then
+            e2e_tests=$(passed sandbox/e2e.json)
+            badge e2e-tests "e2e tests" "$e2e_tests passed" brightgreen
+          fi
+
+          {
+            echo "| Unit tests | E2E tests | Coverage |"
+            echo "|-----------:|----------:|---------:|"
+            echo "| $unit_tests | $e2e_tests | $coverage% |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: badges
+          path: sandbox/badges
+          retention-days: 7
+
+  badges:
+    name: publish badges
+    needs: check
+    if: inputs.badges && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: badges
+          path: badges
+
+      - name: Push to the badges branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd badges
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -q -m "badges for ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
