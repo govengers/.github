@@ -45,7 +45,7 @@ The library provides these justfile recipes:
 
 | Input | Default | |
 |-------|---------|---|
-| `golangci-lint-version` | `v2.11.4` | the release `just lint` runs |
+| `golangci-lint-version` | `v2.15.0` | the release `just lint` runs |
 | `e2e` | `true` | run `just test-e2e` |
 | `badges` | `true` | publish badges on pushes to the default branch |
 

@@ -15,7 +15,7 @@ on:
       golangci-lint-version:
         description: golangci-lint release that `just lint` runs
         type: string
-        default: v2.11.4
+        default: v2.15.0
       e2e:
         description: run `just test-e2e`
         type: boolean
