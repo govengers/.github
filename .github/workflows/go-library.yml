@@ -48,6 +48,8 @@ jobs:
           go-version: ${{ steps.go.outputs.version }}
 
       - uses: extractions/setup-just@v4
+        with:
+          just-version: "1.59.0"
 
       - uses: golangci/golangci-lint-action@v9
         with:
@@ -71,6 +73,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf sandbox/badges # publish only what this step writes
           mkdir -p sandbox/badges
 
           passed() { jq -s '[.[] | select(.Action == "pass" and .Test != null)] | length' "$1"; }
@@ -98,7 +101,11 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: badges
-          path: sandbox/badges
+          path: |
+            sandbox/badges/unit-tests.json
+            sandbox/badges/coverage.json
+            sandbox/badges/e2e-tests.json
+          if-no-files-found: warn
           retention-days: 7
 
   badges:
@@ -106,6 +113,9 @@ jobs:
     needs: check
     if: inputs.badges && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    concurrency:
+      group: badges-${{ github.repository }} # an older run must not overwrite newer badges
+      cancel-in-progress: true
     permissions:
       contents: write
     steps:
