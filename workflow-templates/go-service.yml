@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [$default-branch]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    - cron: "17 2 * * *" # nightly: every test, uncached
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go-service:
+    uses: govengers/.github/.github/workflows/go-service.yml@v1
+    with:
+      image: ghcr.io/${{ github.repository }}
+      full: ${{ github.event_name == 'schedule' }}
+    permissions:
+      contents: write # badges branch
+      packages: write # push to ghcr.io
+      id-token: write # keyless signing of the build provenance
+      attestations: write # store the attestation

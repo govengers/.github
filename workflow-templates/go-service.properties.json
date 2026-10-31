@@ -1,0 +1,10 @@
+{
+  "name": "govengers Go service",
+  "description": "Lint, unit tests of changed packages, end-to-end tests unless unchanged, govulncheck, badges, then an attested multi-arch image on ghcr.io, via the shared govengers workflow.",
+  "categories": [
+    "Go"
+  ],
+  "filePatterns": [
+    "go.mod$"
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "govengers Go library",
-  "description": "Lint, race-tested unit tests with coverage gate, end-to-end tests, govulncheck and README badges, via the shared govengers workflow.",
+  "description": "Lint, race-tested unit tests of changed packages with coverage gate, end-to-end tests unless unchanged, govulncheck and README badges, via the shared govengers workflow.",
   "categories": [
     "Go"
   ],

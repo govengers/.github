@@ -3,10 +3,13 @@
 #
 # Contract with the calling repo:
 #   just lint       golangci-lint with the repo's .golangci.yml
-#   just test       unit tests with -race; writes sandbox/unit.json (go test -json) and sandbox/unit.cover,
-#                   fails below the coverage threshold (TST-010)
-#   just test-e2e   end-to-end tests (build tag e2e); writes sandbox/e2e.json (TST-011)
-#   just vulncheck  govulncheck in text mode (TCH-008)
+#   just test          unit tests with -race; writes sandbox/unit.json (go test -json) and sandbox/unit.cover,
+#                      fails below the coverage threshold (TST-010); without -count=1, so the restored Go cache
+#                      reruns only packages whose test binary changed (TST-014)
+#   just test-e2e      end-to-end tests (build tag e2e); writes sandbox/e2e.json (TST-011); may skip an unchanged
+#                      suite and record green runs in sandbox/e2e-passed, which this workflow carries (TST-015)
+#   just vulncheck     govulncheck in text mode (TCH-008)
+#   with full: true    just test-all and just test-e2e-all instead: everything, uncached (the nightly run)
 name: Go library
 
 on:
@@ -24,6 +27,10 @@ on:
         description: publish unit test, e2e test and coverage badges to the badges branch on pushes to the default branch
         type: boolean
         default: true
+      full:
+        description: run `just test-all` and `just test-e2e-all` (every test, uncached) instead of the scoped recipes; for the nightly run
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,9 +50,45 @@ jobs:
         run: echo "version=$(awk '/^go / { split($2, parts, "."); print parts[1] "." parts[2] ".x" }' go.mod)" >> "$GITHUB_OUTPUT"
 
       # The newest patch of the module's minor version, so govulncheck sees a patched standard library (TCH-001).
+      # setup-go's own cache is keyed on go.sum alone and never refreshed, so test results would not carry over.
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ steps.go.outputs.version }}
+          cache: false
+
+      - name: Go cache paths
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "modules=$(go env GOMODCACHE)"
+            echo "key=go-${RUNNER_OS}-${GO_VERSION}-${GO_SUM}"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GO_VERSION: ${{ steps.go.outputs.version }}
+          GO_SUM: ${{ hashFiles('go.sum') }}
+
+      # The newest build and test cache saved on main: go test then reruns only the packages whose test binary
+      # changed since (TST-014). Only main saves it, so pull requests cannot crowd main's cache out of the
+      # repository's cache quota.
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
+          restore-keys: |
+            ${{ steps.go-cache.outputs.key }}-
+            go-${{ runner.os }}-${{ steps.go.outputs.version }}-
+
+      # Records of green end-to-end runs: a server and suite equal to a recorded run skip the suite (TST-015).
+      - uses: actions/cache/restore@v6
+        if: inputs.e2e
+        with:
+          path: sandbox/e2e-passed
+          key: e2e-passed-${{ github.sha }}
+          restore-keys: e2e-passed-
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
@@ -60,14 +103,31 @@ jobs:
         run: just lint
 
       - name: Unit tests
-        run: just test
+        run: just ${{ inputs.full && 'test-all' || 'test' }}
 
       - name: End-to-end tests
         if: inputs.e2e
-        run: just test-e2e
+        run: just ${{ inputs.full && 'test-e2e-all' || 'test-e2e' }}
 
       - name: Vulnerability scan
         run: just vulncheck
+
+      - name: Save the Go cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+          key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
+
+      # Every run saves its records (a few bytes each), so the next push of a pull request skips an unchanged suite.
+      - name: Save the e2e records
+        if: ${{ !cancelled() && inputs.e2e && hashFiles('sandbox/e2e-passed/**') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: sandbox/e2e-passed
+          key: e2e-passed-${{ github.sha }}
 
       - name: Build badges
         shell: bash
