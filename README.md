@@ -51,7 +51,7 @@ The library provides these justfile recipes:
 | `golangci-lint-version` | `v2.15.0` | the release `just lint` runs |
 | `e2e` | `true` | run `just test-e2e` |
 | `badges` | `true` | publish badges on pushes to the default branch |
-| `full` | `false` | run `just test-all` and `just test-e2e-all` instead; the starter sets it for the nightly schedule |
+| `full` | `false` | run `just test-all` and `just test-e2e-all` instead; the starters set it for the nightly schedule and for `v*` tags, so a release is never tested from the cache |
 
 ### Only what changed is tested
 
