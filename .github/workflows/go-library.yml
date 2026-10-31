@@ -72,11 +72,13 @@ jobs:
       # The newest build and test cache saved on main: go test then reruns only the packages whose test binary
       # changed since (TST-014). Only main saves it, so pull requests cannot crowd main's cache out of the
       # repository's cache quota.
+      # It also holds embedded-postgres' downloaded archives, so test runs neither wait for nor fail on Maven.
       - uses: actions/cache/restore@v6
         with:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
+            ~/.embedded-postgres-go
           key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.go-cache.outputs.key }}-
@@ -119,6 +121,7 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
+            ~/.embedded-postgres-go
           key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
 
       # Every run saves its records (a few bytes each), so the next push of a pull request skips an unchanged suite.
