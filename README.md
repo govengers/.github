@@ -40,6 +40,7 @@ The library provides these justfile recipes:
 | `just test` | unit tests with `-race`, without `-count=1` (TST-014), fails below the coverage threshold (TST-010) | `sandbox/unit.json` (`go test -json`), `sandbox/unit.cover` |
 | `just test-e2e` | end-to-end tests behind the `e2e` build tag (TST-011); may skip an unchanged suite (TST-015) | `sandbox/e2e.json`, records in `sandbox/e2e-passed/` |
 | `just vulncheck` | `govulncheck` in text mode (TCH-008) | |
+| `just test-typescript` | only with `bun-version`: type checks and bun tests of the library's TypeScript sources; Bun is on the `PATH` for every recipe, so `just test-e2e` may drive it too | |
 | `just test-all`, `just test-e2e-all` | only with `full: true`: every test, uncached | as above |
 
 `gotestsum --jsonfile` gives readable output and the JSON file in one run; a library pins it with `go run gotest.tools/gotestsum@<version>` (TCH-002).
@@ -51,6 +52,7 @@ The library provides these justfile recipes:
 | `golangci-lint-version` | `v2.15.0` | the release `just lint` runs |
 | `e2e` | `true` | run `just test-e2e` |
 | `badges` | `true` | publish badges on pushes to the default branch |
+| `bun-version` | `""` | install this Bun release before the tests and run `just test-typescript` after the unit tests; empty installs no Bun |
 | `full` | `false` | run `just test-all` and `just test-e2e-all` instead; the starters set it for the nightly schedule and for `v*` tags, so a release is never tested from the cache |
 
 ### Only what changed is tested
