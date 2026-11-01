@@ -9,6 +9,8 @@
 #   just test-e2e      end-to-end tests (build tag e2e); writes sandbox/e2e.json (TST-011); may skip an unchanged
 #                      suite and record green runs in sandbox/e2e-passed, which this workflow carries (TST-015)
 #   just vulncheck     govulncheck in text mode (TCH-008)
+#   just test-typescript   only with bun-version: TypeScript type checks and bun tests of the library's
+#                      TypeScript sources; Bun is on the PATH for every recipe, so test-e2e may drive it too
 #   with full: true    just test-all and just test-e2e-all instead: everything, uncached (the nightly run)
 name: Go library
 
@@ -31,6 +33,10 @@ on:
         description: run `just test-all` and `just test-e2e-all` (every test, uncached) instead of the scoped recipes; for the nightly run
         type: boolean
         default: false
+      bun-version:
+        description: Bun release to install before the tests; when set, `just test-typescript` runs after the unit tests. Empty (the default) installs no Bun and runs no TypeScript recipe
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -101,11 +107,20 @@ jobs:
           version: ${{ inputs.golangci-lint-version }}
           install-only: true
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: inputs.bun-version != ''
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
       - name: Lint
         run: just lint
 
       - name: Unit tests
         run: just ${{ inputs.full && 'test-all' || 'test' }}
+
+      - name: TypeScript tests
+        if: inputs.bun-version != ''
+        run: just test-typescript
 
       - name: End-to-end tests
         if: inputs.e2e
