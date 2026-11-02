@@ -56,10 +56,12 @@ jobs:
         run: echo "version=$(awk '/^go / { split($2, parts, "."); print parts[1] "." parts[2] ".x" }' go.mod)" >> "$GITHUB_OUTPUT"
 
       # The newest patch of the module's minor version, so govulncheck sees a patched standard library (TCH-001).
+      # check-latest: without it setup-go takes the runner's cached patch, which lags a fresh stdlib advisory.
       # setup-go's own cache is keyed on go.sum alone and never refreshed, so test results would not carry over.
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ steps.go.outputs.version }}
+          check-latest: true
           cache: false
 
       - name: Go cache paths
