@@ -148,6 +148,7 @@ jobs:
         with:
           version: ${{ inputs.golangci-lint-version }}
           install-only: true
+          skip-cache: true # its cache travels in the job's cache above
 
       - run: just lint
 
@@ -369,7 +370,7 @@ jobs:
   badges:
     name: publish badges
     needs: [lint, test, e2e, typescript, recipes]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     concurrency:
       group: badges-${{ github.repository }} # an older run must not overwrite newer badges
@@ -402,7 +403,7 @@ jobs:
     name: build, attest and push the image
     needs: [lint, test, e2e, typescript, recipes]
     # Only pushes to the default branch and v* tags; skipped needs (no e2e, no recipes) do not block it.
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     # One run per ref at a time, the newest last: a slower run of an older main commit cannot re-point :main.
     # Tags get a group each (a shared group would drop a queued release); which moving tags a tag may move is
