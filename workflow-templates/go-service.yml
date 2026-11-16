@@ -21,8 +21,13 @@ jobs:
     with:
       image: ghcr.io/${{ github.repository }}
       full: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
+      # bun-version: "1.4.4" # a frontend: Bun in every job and `just test-typescript`
+      # recipes: '["generate-check", "db-check"]' # extra recipes, one job each
+      budget-warm-seconds: 300 # fails a pipeline over 5 minutes (+20 %) with warm caches
+      budget-cold-seconds: 480 # and over 8 minutes cold
     permissions:
       contents: write # badges branch
       packages: write # push to ghcr.io
       id-token: write # keyless signing of the build provenance
       attestations: write # store the attestation
+      actions: read # the budget job reads the run's job times

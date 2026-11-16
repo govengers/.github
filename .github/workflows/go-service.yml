@@ -1,9 +1,15 @@
-# Reusable CI for govengers Go services: the checks of go-library.yml (lint, scoped unit tests, e2e unless
-# unchanged, vulncheck, badges), then on a push to main or a v* tag the image is built, attested and pushed:
+# Reusable CI for govengers Go services, in parallel jobs: lint and vulncheck, unit tests, the end-to-end suite
+# unless unchanged, the TypeScript tests with bun-version, and one job per extra recipe; a check job stands for
+# them all, under the name of v1's single check, for branch protection. Pushes to the default
+# branch publish the badges; pushes to the default branch and v* tags then build, attest and push the image:
 # :main on main, :1.2.3 on a v1.2.3 tag, and :1.2, :1 and :latest only when the tag is the newest release they
-# cover. The service's justfile follows the contract in go-library.yml (govengers/standards templates/service).
+# cover. With a budget, a last job prints every job's time and fails a pipeline that took too long.
 #
-# The caller grants: contents: write (badges), packages: write, id-token: write, attestations: write.
+# Contract with the calling repo: the justfile recipes of go-library.yml (govengers/standards templates/service),
+# plus any recipe named in `recipes`. Every recipe sees FULL=true on a full run.
+#
+# The caller grants: contents: write (badges), packages: write, id-token: write, attestations: write, and with a
+# budget actions: read (the run's job times).
 name: Go service
 
 on:
@@ -26,31 +32,408 @@ on:
         type: boolean
         default: true
       full:
-        description: run every test uncached (the nightly run)
+        description: run every test uncached (the nightly run); extra recipes see FULL=true
         type: boolean
         default: false
       golangci-lint-version:
         description: golangci-lint release that `just lint` runs
         type: string
         default: v2.15.0
+      bun-version:
+        description: Bun release on the PATH of every job; when set, a job runs `just test-typescript` (the frontend's type checks, tests and build) unless typescript is false. Empty (the default) installs no Bun
+        type: string
+        default: ""
+      typescript:
+        description: with bun-version, run `just test-typescript`; false when Bun only serves a tool of another recipe
+        type: boolean
+        default: true
+      recipes:
+        description: 'extra justfile recipes, each in its own job with its own cache, as a JSON array, e.g. ["generate-check", "db-check"]. Empty (the default) runs none'
+        type: string
+        default: ""
+      budget-warm-seconds:
+        description: pipeline budget in seconds when the test job restored a cache of the same Go release and go.sum; 0 (the default) sets none
+        type: number
+        default: 0
+      budget-cold-seconds:
+        description: pipeline budget in seconds without such a cache; 0 (the default) sets none
+        type: number
+        default: 0
+      budget-margin-percent:
+        description: overrun of the budget tolerated before the pipeline fails
+        type: number
+        default: 20
 
-permissions:
-  contents: read
+# No workflow-wide permissions: every job names its own, except budget, which takes the caller's grant
+# (actions: read) and runs no code of the calling repository.
+
+env:
+  FULL: ${{ inputs.full }}
 
 jobs:
-  check:
-    uses: govengers/.github/.github/workflows/go-library.yml@v1
-    with:
-      e2e: ${{ inputs.e2e }}
-      full: ${{ inputs.full }}
-      golangci-lint-version: ${{ inputs.golangci-lint-version }}
+  lint:
+    name: lint, vulncheck
+    runs-on: ubuntu-latest
     permissions:
-      contents: write # the badges job pushes test and coverage badges to the badges branch
+      contents: read
+    env:
+      CACHE_JOB: lint
+    # The setup steps are anchored here and reused by every Go job: a reusable workflow cannot call a local
+    # action of its own repository (./ is the caller's checkout).
+    steps:
+      - &checkout
+        uses: actions/checkout@v7
+
+      - &go-version
+        name: Go minor version from go.mod
+        id: go
+        shell: bash
+        run: echo "version=$(awk '/^go / { split($2, parts, "."); print parts[1] "." parts[2] ".x" }' go.mod)" >> "$GITHUB_OUTPUT"
+
+      # The newest patch of the module's minor version, so govulncheck sees a patched standard library (TCH-001).
+      # check-latest: without it setup-go takes the runner's cached patch, which lags a fresh stdlib advisory.
+      # setup-go's own cache is keyed on go.sum alone and never refreshed, so test results would not carry over.
+      - &setup-go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          check-latest: true
+          cache: false
+
+      # One cache per job, since the jobs build different things (race tests, the e2e coverage build, lint): the
+      # Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries and
+      # golangci-lint's cache. The children of ~/.embedded-postgres-go, not the directory: an excluded path inside
+      # an included directory still lands in the archive, and a service's own test server keeps its data (and a
+      # postmaster.pid that refuses the next start) under a *-test directory. The key names the installed patch:
+      # a cache of another toolchain holds no usable build or test result, so its run is cold (and saves).
+      - &cache-paths
+        name: Cache paths
+        id: cache-paths
+        shell: bash
+        run: |
+          # shellcheck disable=SC2088 # the tilde is for actions/cache, which expands it
+          {
+            echo "key=go-${CACHE_JOB}-${RUNNER_OS}-$(go env GOVERSION)-${GO_SUM}"
+            echo "paths<<EOF"
+            go env GOCACHE
+            go env GOMODCACHE
+            echo "~/.embedded-postgres-go/*"
+            echo "!~/.embedded-postgres-go/*-test"
+            echo "~/.cache/golangci-lint"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GO_SUM: ${{ hashFiles('go.sum') }}
+
+      # The newest cache of this job saved on the default branch (or by an earlier cold run of this pull
+      # request): go test then reruns only the packages whose test binary changed (TST-014). Without one of
+      # this toolchain and go.sum, any of this job's caches still brings most modules.
+      - &cache-restore
+        uses: actions/cache/restore@v6
+        id: cache
+        with:
+          path: ${{ steps.cache-paths.outputs.paths }}
+          key: ${{ steps.cache-paths.outputs.key }}-${{ github.sha }}
+          restore-keys: |
+            ${{ steps.cache-paths.outputs.key }}-
+            go-${{ env.CACHE_JOB }}-${{ runner.os }}-
+
+      - &just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: "1.59.0"
+
+      - &bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: inputs.bun-version != ''
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - &golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          install-only: true
+          skip-cache: true # its cache travels in the job's cache above
+
+      - run: just lint
+
+      - run: just vulncheck
+
+      # Pushes to the default branch save; a pull request saves only when it found no cache of its Go release and go.sum
+      # (a cold run), so its next push is warm and pull requests do not crowd the default branch's caches out.
+      - &cache-save
+        name: Save the Go cache
+        if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'pull_request' && !startsWith(steps.cache.outputs.cache-matched-key, format('{0}-', steps.cache-paths.outputs.key)))) }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.cache-paths.outputs.paths }}
+          key: ${{ steps.cache-paths.outputs.key }}-${{ github.sha }}
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CACHE_JOB: test
+    outputs:
+      cache: ${{ startsWith(steps.cache.outputs.cache-matched-key, format('{0}-', steps.cache-paths.outputs.key)) && 'warm' || 'cold' }}
+    steps:
+      - *checkout
+      - *go-version
+      - *setup-go
+      - *cache-paths
+      - *cache-restore
+      - *just
+      - *bun
+
+      - run: just ${{ inputs.full && 'test-all' || 'test' }}
+
+      - name: Unit test and coverage badges
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sandbox/badges
+          badge() { jq -n --arg label "$2" --arg message "$3" --arg color "$4" \
+            '{schemaVersion: 1, label: $label, message: $message, color: $color}' > "sandbox/badges/$1.json"; }
+          unit_tests=$(jq -s '[.[] | select(.Action == "pass" and .Test != null)] | length' sandbox/unit.json)
+          coverage=$(go tool cover -func=sandbox/unit.cover | awk '/^total:/ { sub("%", "", $3); print $3 }')
+          coverage_color=$(awk -v coverage="$coverage" 'BEGIN { print (coverage >= 80 ? "brightgreen" : (coverage >= 60 ? "yellow" : "red")) }')
+          badge unit-tests "unit tests" "$unit_tests passed" brightgreen
+          badge coverage "coverage" "$coverage%" "$coverage_color"
+          {
+            echo "| Unit tests | Coverage |"
+            echo "|-----------:|---------:|"
+            echo "| $unit_tests | $coverage% |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: unit-tests
+          path: |
+            sandbox/unit.json
+            sandbox/badges/unit-tests.json
+            sandbox/badges/coverage.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - *cache-save
+
+  e2e:
+    name: end-to-end tests
+    if: inputs.e2e
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CACHE_JOB: e2e
+    steps:
+      - *checkout
+      - *go-version
+      - *setup-go
+      - *cache-paths
+      - *cache-restore
+      - *just
+      - *bun
+
+      # Records of green runs: a server and suite equal to a recorded run skip the suite (TST-015). A full run
+      # runs it regardless.
+      - uses: actions/cache/restore@v6
+        if: ${{ !inputs.full }}
+        with:
+          path: sandbox/e2e-passed
+          key: e2e-passed-${{ github.sha }}
+          restore-keys: e2e-passed-
+
+      - run: just ${{ inputs.full && 'test-e2e-all' || 'test-e2e' }}
+
+      # Every run saves its records (a few bytes each), so the next push of a pull request skips an unchanged suite.
+      - name: Save the e2e records
+        if: ${{ !cancelled() && !inputs.full && hashFiles('sandbox/e2e-passed/**') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: sandbox/e2e-passed
+          key: e2e-passed-${{ github.sha }}
+
+      # A skipped suite may leave no report (TST-015 only asks for the record): then no badge, as in go-library.yml.
+      - name: End-to-end test badge
+        if: hashFiles('sandbox/e2e.json') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sandbox/badges
+          e2e_tests=$(jq -s '[.[] | select(.Action == "pass" and .Test != null)] | length' sandbox/e2e.json)
+          jq -n --arg message "$e2e_tests passed" \
+            '{schemaVersion: 1, label: "e2e tests", message: $message, color: "brightgreen"}' > sandbox/badges/e2e-tests.json
+          {
+            echo "| E2E tests |"
+            echo "|----------:|"
+            echo "| $e2e_tests |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-tests
+          path: |
+            sandbox/e2e.json
+            sandbox/badges/e2e-tests.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - *cache-save
+
+  typescript:
+    name: TypeScript tests
+    if: inputs.bun-version != '' && inputs.typescript
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - *checkout
+      - *just
+      - *bun
+      - run: just test-typescript
+
+  recipes:
+    name: just ${{ matrix.recipe }}
+    if: inputs.recipes != '' && fromJSON(inputs.recipes)[0] != null # GitHub fails an empty matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: ${{ fromJSON(inputs.recipes) }}
+    env:
+      CACHE_JOB: recipe-${{ matrix.recipe }}
+      BASE_REF: ${{ github.base_ref }} # the pull request's base branch, for checks against it (empty on a push)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the base branch, for checks against it such as an API breaking-change check
+      - *go-version
+      - *setup-go
+      - *cache-paths
+      - *cache-restore
+      - *just
+      - *bun
+      - *golangci-lint
+      - run: just "$RECIPE"
+        env:
+          RECIPE: ${{ matrix.recipe }}
+      - *cache-save
+
+  # One check that stands for all of the above, so branch protection can require it whatever jobs the inputs
+  # add. It keeps the name of v1's single check (go-service / check / lint, test, e2e, vulncheck). always(): a
+  # skipped required check counts as passed, so it must not be skipped when the run is cancelled.
+  check:
+    name: check / lint, test, e2e, vulncheck
+    needs: [lint, test, e2e, typescript, recipes]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Every job passed or was skipped by its input
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* ]]; then exit 1; fi
+
+  budget:
+    name: pipeline budget
+    needs: [lint, test, e2e, typescript, recipes]
+    if: ${{ !cancelled() && !inputs.full && (inputs.budget-warm-seconds > 0 || inputs.budget-cold-seconds > 0) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Job times against the budget
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE: ${{ needs.test.outputs.cache || 'cold' }}
+          WARM_BUDGET: ${{ inputs.budget-warm-seconds }}
+          COLD_BUDGET: ${{ inputs.budget-cold-seconds }}
+          MARGIN_PERCENT: ${{ inputs.budget-margin-percent }}
+        run: |
+          set -euo pipefail
+          budget=$COLD_BUDGET
+          if [ "$CACHE" = warm ]; then budget=$WARM_BUDGET; fi
+
+          attempt="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/${GITHUB_RUN_ATTEMPT:-1}"
+          if ! run=$(gh api "$attempt") || ! jobs=$(gh api "$attempt/jobs" --paginate); then
+            echo "budget: the run's jobs are not readable; the caller must grant actions: read" >&2
+            exit 1
+          fi
+          seconds() { jq -rn --arg from "$1" --arg to "$2" '(($to | fromdateiso8601) - ($from | fromdateiso8601))'; }
+          elapsed=$(seconds "$(jq -r '.run_started_at' <<<"$run")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+
+          {
+            echo "| Job | Seconds |"
+            echo "|-----|--------:|"
+            jq -r '.jobs[] | select(.completed_at != null and .conclusion != "skipped") | [.name, .started_at, .completed_at] | @tsv' <<<"$jobs" |
+              while IFS=$'\t' read -r name from to; do
+                echo "| $name | $(seconds "$from" "$to") |"
+              done
+            echo "| **pipeline so far** ($CACHE caches, attempt ${GITHUB_RUN_ATTEMPT:-1}) | **$elapsed** |"
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [ "$budget" -eq 0 ]; then
+            echo "No $CACHE budget set." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A re-run attempt starts its clock anew and may re-run only some jobs, so its time is not the pipeline's.
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+            echo "Re-run attempt $GITHUB_RUN_ATTEMPT: the times cover this attempt only, the budget is not checked." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          limit=$((budget * (100 + MARGIN_PERCENT) / 100))
+          echo "Budget $budget s ($CACHE), failing above $limit s (+$MARGIN_PERCENT %)." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$elapsed" -gt "$limit" ]; then
+            echo "budget: the pipeline took $elapsed s, over its $CACHE budget of $budget s plus $MARGIN_PERCENT %" >&2
+            exit 1
+          fi
+
+  badges:
+    name: publish badges
+    needs: [lint, test, e2e, typescript, recipes]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: badges-${{ github.repository }} # an older run must not overwrite newer badges
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*-tests"
+          path: artifacts
+
+      - name: Push to the badges branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir badges
+          find artifacts -path '*/badges/*.json' -exec cp {} badges/ \;
+          cd badges
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -q -m "badges for ${GITHUB_SHA::7}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
 
   image:
     name: build, attest and push the image
-    needs: check
-    if: github.event_name == 'push'
+    needs: [lint, test, e2e, typescript, recipes]
+    # Only pushes to the default branch and v* tags; skipped needs (no e2e, no recipes) do not block it.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     # One run per ref at a time, the newest last: a slower run of an older main commit cannot re-point :main.
     # Tags get a group each (a shared group would drop a queued release); which moving tags a tag may move is
@@ -124,7 +507,10 @@ jobs:
 
       # Consumers verify the image came from this workflow:
       # gh attestation verify oci://<image>@<digest> --repo <owner>/<repo>
+      # Private repositories get no attestation: GitHub stores them only for public repositories (and on
+      # GitHub Enterprise Cloud), so the step would fail the release.
       - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
         with:
           subject-name: ${{ inputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
