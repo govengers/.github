@@ -41,7 +41,7 @@ The library provides these justfile recipes:
 | `just test-e2e` | end-to-end tests behind the `e2e` build tag (TST-011); may skip an unchanged suite (TST-015) | `sandbox/e2e.json`, records in `sandbox/e2e-passed/` |
 | `just vulncheck` | `govulncheck` in text mode (TCH-008) | |
 | `just test-typescript` | only with `bun-version`: type checks and bun tests of the library's TypeScript sources; Bun is on the `PATH` for every recipe, so `just test-e2e` may drive it too | |
-| `just test-all`, `just test-e2e-all` | only with `full: true`: every test, uncached | as above |
+| `just test-all`, `just test-e2e-all` | only with `full: true`: every test, uncached and shuffled (`-count=1 -shuffle=on`, TST-005) | as above |
 
 `gotestsum --jsonfile` gives readable output and the JSON file in one run; a library pins it with `go run gotest.tools/gotestsum@<version>` (TCH-002).
 
@@ -81,8 +81,9 @@ On every push to the default branch the workflow force-pushes three [shields.io 
 | lint, vulncheck | `just lint`, `just vulncheck` | always |
 | unit tests | `just test` (`full`: `just test-all`); unit test and coverage badges | always |
 | end-to-end tests | `just test-e2e` (`full`: `just test-e2e-all`), skipped by the recipe when server and suite equal a green run (TST-015) | `e2e: true` |
-| TypeScript tests | `just test-typescript`: the frontend's type checks, tests and build | `bun-version` set |
-| just &lt;recipe&gt; | one job per entry of `recipes` | `recipes` set |
+| TypeScript tests | `just test-typescript`: the frontend's type checks, tests and build | `bun-version` set, `typescript` not false |
+| just &lt;recipe&gt; | one job per entry of `recipes` | `recipes` not empty |
+| check / lint, test, e2e, vulncheck | fails when any job above failed or was cancelled: the one check for branch protection to require | always |
 | pipeline budget | prints every job's time and fails when the pipeline took longer than its budget plus the margin | a budget set, not on `full` runs |
 | publish badges | pushes the badges to the `badges` branch | pushes to the default branch |
 | build, attest and push the image | as above; private repositories get no attestation | pushes to the default branch and `v*` tags |
@@ -98,6 +99,7 @@ On every push to the default branch the workflow force-pushes three [shields.io 
 | `full` | `false` | every test uncached; extra recipes see `FULL=true`; no budget. The starter sets it for the nightly schedule and for `v*` tags |
 | `golangci-lint-version` | `v2.15.0` | installed in the lint job and the recipe jobs |
 | `bun-version` | `""` | Bun on the `PATH` of every job and the TypeScript job; empty installs no Bun |
+| `typescript` | `true` | with `bun-version`, run the TypeScript job; `false` when Bun only serves a tool, e.g. squawk in a recipe |
 | `recipes` | `""` | extra recipes as a JSON array, e.g. `'["generate-check", "db-check"]'`; each job checks out the full history and sees `BASE_REF`, the pull request's base branch, for checks against it |
 | `budget-warm-seconds` | `0` | the pipeline's budget when the test job restored a cache of the same `go.sum`; `0` sets none |
 | `budget-cold-seconds` | `0` | the budget without such a cache |
@@ -107,10 +109,10 @@ The caller grants `contents: write` (badges), `packages: write`, `id-token: writ
 
 ### Caches
 
-Every Go job restores its own cache: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
+Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
 
 ## Versioning
 
-Libraries and services call `@v1`. Backward-compatible changes move the `v1` tag; a change to the contract above is `v2`. New inputs with defaults that keep the old behaviour, new jobs and renamed check names are backward compatible; a branch protection rule that names an old check must be updated when the tag moves.
+Libraries and services call `@v1`. Backward-compatible changes move the `v1` tag; a change to the contract above is `v2`. New inputs with defaults that keep the old behaviour and new jobs are backward compatible. Check names are not part of the contract and may change under `v1`, except one per workflow that branch protection can require: `go-service / check / lint, test, e2e, vulncheck` for services (the caller's job id first), `go-library / lint, test, e2e, vulncheck` for libraries.
 
 Pull requests here run [actionlint](.github/workflows/actionlint.yml). A change to a reusable workflow is verified by a throwaway draft pull request in a library that points its `ci.yml` at the branch (`uses: govengers/.github/.github/workflows/<file>@<branch>`), closed without merging.

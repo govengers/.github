@@ -1,5 +1,6 @@
 # Reusable CI for govengers Go services, in parallel jobs: lint and vulncheck, unit tests, the end-to-end suite
-# unless unchanged, the TypeScript tests with bun-version, and one job per extra recipe. Pushes to the default
+# unless unchanged, the TypeScript tests with bun-version, and one job per extra recipe; a check job stands for
+# them all, under the name of v1's single check, for branch protection. Pushes to the default
 # branch publish the badges; pushes to the default branch and v* tags then build, attest and push the image:
 # :main on main, :1.2.3 on a v1.2.3 tag, and :1.2, :1 and :latest only when the tag is the newest release they
 # cover. With a budget, a last job prints every job's time and fails a pipeline that took too long.
@@ -39,9 +40,13 @@ on:
         type: string
         default: v2.15.0
       bun-version:
-        description: Bun release on the PATH of every job; when set, a job runs `just test-typescript` (the frontend's type checks, tests and build). Empty (the default) installs no Bun
+        description: Bun release on the PATH of every job; when set, a job runs `just test-typescript` (the frontend's type checks, tests and build) unless typescript is false. Empty (the default) installs no Bun
         type: string
         default: ""
+      typescript:
+        description: with bun-version, run `just test-typescript`; false when Bun only serves a tool of another recipe
+        type: boolean
+        default: true
       recipes:
         description: 'extra justfile recipes, each in its own job with its own cache, as a JSON array, e.g. ["generate-check", "db-check"]. Empty (the default) runs none'
         type: string
@@ -99,7 +104,8 @@ jobs:
       # Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries and
       # golangci-lint's cache. The children of ~/.embedded-postgres-go, not the directory: an excluded path inside
       # an included directory still lands in the archive, and a service's own test server keeps its data (and a
-      # postmaster.pid that refuses the next start) under a *-test directory.
+      # postmaster.pid that refuses the next start) under a *-test directory. The key names the installed patch:
+      # a cache of another toolchain holds no usable build or test result, so its run is cold (and saves).
       - &cache-paths
         name: Cache paths
         id: cache-paths
@@ -107,7 +113,7 @@ jobs:
         run: |
           # shellcheck disable=SC2088 # the tilde is for actions/cache, which expands it
           {
-            echo "key=go-${CACHE_JOB}-${RUNNER_OS}-${GO_VERSION}-${GO_SUM}"
+            echo "key=go-${CACHE_JOB}-${RUNNER_OS}-$(go env GOVERSION)-${GO_SUM}"
             echo "paths<<EOF"
             go env GOCACHE
             go env GOMODCACHE
@@ -117,11 +123,11 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
         env:
-          GO_VERSION: ${{ steps.go.outputs.version }}
           GO_SUM: ${{ hashFiles('go.sum') }}
 
       # The newest cache of this job saved on the default branch (or by an earlier cold run of this pull
-      # request): go test then reruns only the packages whose test binary changed (TST-014).
+      # request): go test then reruns only the packages whose test binary changed (TST-014). Without one of
+      # this toolchain and go.sum, any of this job's caches still brings most modules.
       - &cache-restore
         uses: actions/cache/restore@v6
         id: cache
@@ -130,7 +136,7 @@ jobs:
           key: ${{ steps.cache-paths.outputs.key }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.cache-paths.outputs.key }}-
-            go-${{ env.CACHE_JOB }}-${{ runner.os }}-${{ steps.go.outputs.version }}-
+            go-${{ env.CACHE_JOB }}-${{ runner.os }}-
 
       - &just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
@@ -251,7 +257,9 @@ jobs:
           path: sandbox/e2e-passed
           key: e2e-passed-${{ github.sha }}
 
+      # A skipped suite may leave no report (TST-015 only asks for the record): then no badge, as in go-library.yml.
       - name: End-to-end test badge
+        if: hashFiles('sandbox/e2e.json') != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -279,7 +287,7 @@ jobs:
 
   typescript:
     name: TypeScript tests
-    if: inputs.bun-version != ''
+    if: inputs.bun-version != '' && inputs.typescript
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -291,7 +299,7 @@ jobs:
 
   recipes:
     name: just ${{ matrix.recipe }}
-    if: inputs.recipes != ''
+    if: inputs.recipes != '' && fromJSON(inputs.recipes)[0] != null # GitHub fails an empty matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -317,6 +325,23 @@ jobs:
         env:
           RECIPE: ${{ matrix.recipe }}
       - *cache-save
+
+  # One check that stands for all of the above, so branch protection can require it whatever jobs the inputs
+  # add. It keeps the name of v1's single check (go-service / check / lint, test, e2e, vulncheck). always(): a
+  # skipped required check counts as passed, so it must not be skipped when the run is cancelled.
+  check:
+    name: check / lint, test, e2e, vulncheck
+    needs: [lint, test, e2e, typescript, recipes]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Every job passed or was skipped by its input
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* ]]; then exit 1; fi
 
   budget:
     name: pipeline budget
@@ -352,12 +377,17 @@ jobs:
               while IFS=$'\t' read -r name from to; do
                 echo "| $name | $(seconds "$from" "$to") |"
               done
-            echo "| **pipeline so far** ($CACHE caches) | **$elapsed** |"
+            echo "| **pipeline so far** ($CACHE caches, attempt ${GITHUB_RUN_ATTEMPT:-1}) | **$elapsed** |"
             echo
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
           if [ "$budget" -eq 0 ]; then
             echo "No $CACHE budget set." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A re-run attempt starts its clock anew and may re-run only some jobs, so its time is not the pipeline's.
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+            echo "Re-run attempt $GITHUB_RUN_ATTEMPT: the times cover this attempt only, the budget is not checked." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           limit=$((budget * (100 + MARGIN_PERCENT) / 100))
