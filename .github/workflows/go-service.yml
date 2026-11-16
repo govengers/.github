@@ -289,7 +289,7 @@ jobs:
       - run: just test-typescript
 
   recipes:
-    name: ${{ matrix.recipe && format('just {0}', matrix.recipe) || 'extra recipes' }}
+    name: just ${{ matrix.recipe }}
     if: inputs.recipes != ''
     runs-on: ubuntu-latest
     permissions:
