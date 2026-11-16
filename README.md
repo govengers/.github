@@ -101,7 +101,7 @@ On every push to the default branch the workflow force-pushes three [shields.io 
 | `bun-version` | `""` | Bun on the `PATH` of every job and the TypeScript job; empty installs no Bun |
 | `typescript` | `true` | with `bun-version`, run the TypeScript job; `false` when Bun only serves a tool, e.g. squawk in a recipe |
 | `recipes` | `""` | extra recipes as a JSON array, e.g. `'["generate-check", "db-check"]'`; each job checks out the full history and sees `BASE_REF`, the pull request's base branch, for checks against it |
-| `budget-warm-seconds` | `0` | the pipeline's budget when the test job restored a cache of the same `go.sum`; `0` sets none |
+| `budget-warm-seconds` | `0` | the pipeline's budget when the test job restored a cache of the same Go release and `go.sum`; `0` sets none |
 | `budget-cold-seconds` | `0` | the budget without such a cache |
 | `budget-margin-percent` | `20` | overrun tolerated before the budget job fails |
 
@@ -109,7 +109,7 @@ The caller grants `contents: write` (badges), `packages: write`, `id-token: writ
 
 ### Caches
 
-Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
+Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its Go release and `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
 
 ## Versioning
 

@@ -26,7 +26,7 @@ test cache, the module cache, the children of `~/.embedded-postgres-go` except `
 running test server keeps its data, and a `postmaster.pid` that refuses the next start, under such a
 directory; an excluded path inside an included directory would still land in the archive) and
 golangci-lint's cache. Pushes to the default branch save; a pull request saves only when it restored
-no cache of its `go.sum` (a cold run, typically a dependency update), so its next push is warm, and
+no cache of its Go release and `go.sum` (a cold run, typically a dependency update or a Go patch release), so its next push is warm, and
 pull requests do not crowd the default branch's caches out of the quota. The key names the installed Go
 release (`go env GOVERSION`), not the minor of `go.mod`: setup-go installs the newest patch, and after a
 patch release a cache of the old one holds no usable build or test result, so the run must count as cold
@@ -40,7 +40,7 @@ version from a branch under test.
 
 The budget job prints every job's time and fails when the run, from its start to the budget job, took
 longer than `budget-<warm|cold>-seconds` plus `budget-margin-percent`. Warm means the unit test job
-restored a cache of the same `go.sum`. It reads `run_started_at` and the jobs of the run attempt from the
+restored a cache of the same Go release and `go.sum`. It reads `run_started_at` and the jobs of the run attempt from the
 API, which needs `actions: read` on private repositories. The job declares no `permissions`: a job of a
 called workflow that declares a permission the caller did not grant fails the whole run at startup, even
 when the job would be skipped (verified 16.11.2026 on a probe pull request), which would break every v1

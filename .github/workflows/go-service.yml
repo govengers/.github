@@ -52,7 +52,7 @@ on:
         type: string
         default: ""
       budget-warm-seconds:
-        description: pipeline budget in seconds when the test job restored a cache of the same go.sum; 0 (the default) sets none
+        description: pipeline budget in seconds when the test job restored a cache of the same Go release and go.sum; 0 (the default) sets none
         type: number
         default: 0
       budget-cold-seconds:
@@ -160,8 +160,8 @@ jobs:
 
       - run: just vulncheck
 
-      # Pushes to the default branch save; a pull request saves only when it found no cache of its go.sum (a cold
-      # run), so its next push is warm and pull requests do not crowd the default branch's caches out.
+      # Pushes to the default branch save; a pull request saves only when it found no cache of its Go release and go.sum
+      # (a cold run), so its next push is warm and pull requests do not crowd the default branch's caches out.
       - &cache-save
         name: Save the Go cache
         if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'pull_request' && !startsWith(steps.cache.outputs.cache-matched-key, format('{0}-', steps.cache-paths.outputs.key)))) }}
