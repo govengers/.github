@@ -64,6 +64,10 @@ on:
         type: number
         default: 20
 
+# Runner: the jobs that run the repository's code take the runs-on label in the caller's CI_RUNNER variable
+# (org or repo; the govengers org sets the fuji self-hosted runners), ubuntu-latest when it is unset. A pull
+# request from a fork always runs on ubuntu-latest: self-hosted runners must never run code of an outside fork.
+
 # No workflow-wide permissions: every job names its own, except budget, which takes the caller's grant
 # (actions: read) and runs no code of the calling repository.
 
@@ -73,7 +77,7 @@ env:
 jobs:
   lint:
     name: lint, vulncheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     env:
@@ -172,7 +176,7 @@ jobs:
 
   test:
     name: unit tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     env:
@@ -224,7 +228,7 @@ jobs:
   e2e:
     name: end-to-end tests
     if: inputs.e2e
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     env:
@@ -288,7 +292,7 @@ jobs:
   typescript:
     name: TypeScript tests
     if: inputs.bun-version != '' && inputs.typescript
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -300,7 +304,7 @@ jobs:
   recipes:
     name: just ${{ matrix.recipe }}
     if: inputs.recipes != '' && fromJSON(inputs.recipes)[0] != null # GitHub fails an empty matrix
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     strategy:
@@ -434,7 +438,7 @@ jobs:
     needs: [lint, test, e2e, typescript, recipes]
     # Only pushes to the default branch and v* tags; skipped needs (no e2e, no recipes) do not block it.
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     # One run per ref at a time, the newest last: a slower run of an older main commit cannot re-point :main.
     # Tags get a group each (a shared group would drop a queued release); which moving tags a tag may move is
     # decided from the repository's tags, not from run order.

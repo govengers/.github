@@ -38,13 +38,17 @@ on:
         type: string
         default: ""
 
+# Runner: the jobs that run the repository's code take the runs-on label in the caller's CI_RUNNER variable
+# (org or repo; the govengers org sets the fuji self-hosted runners), ubuntu-latest when it is unset. A pull
+# request from a fork always runs on ubuntu-latest: self-hosted runners must never run code of an outside fork.
+
 permissions:
   contents: read
 
 jobs:
   check:
     name: lint, test, e2e, vulncheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
