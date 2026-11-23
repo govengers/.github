@@ -111,6 +111,10 @@ The caller grants `contents: write` (badges), `packages: write`, `id-token: writ
 
 Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its Go release and `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
 
+## Runners
+
+Both workflows run the jobs that execute the repository's code (library: the one check job; service: lint, unit tests, e2e, TypeScript, extra recipes and the image build) on the runs-on label in the caller's `CI_RUNNER` variable, and on `ubuntu-latest` when it is unset. The govengers org sets `CI_RUNNER=fuji-govengers`, the self-hosted runners on the fujis cluster; unset it to fall back to GitHub's runners. GitHub Free does not share org variables with private repositories, so a private repository sets its own `CI_RUNNER`. A pull request from a fork always runs on `ubuntu-latest`: a self-hosted runner never runs code of an outside fork. The aggregate jobs (check, budget, badges) stay on `ubuntu-latest`.
+
 ## Versioning
 
 Libraries and services call `@v1`. Backward-compatible changes move the `v1` tag; a change to the contract above is `v2`. New inputs with defaults that keep the old behaviour and new jobs are backward compatible. Check names are not part of the contract and may change under `v1`, except one per workflow that branch protection can require: `go-service / check / lint, test, e2e, vulncheck` for services (the caller's job id first), `go-library / lint, test, e2e, vulncheck` for libraries.
