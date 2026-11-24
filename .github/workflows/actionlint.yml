@@ -1,5 +1,6 @@
-# Lints this repository's workflows (actionlint with shellcheck) on every push and pull request. The reusable
-# workflows themselves are verified by calling them from a pull request of a library (README, Versioning).
+# Lints this repository's workflows (actionlint with shellcheck) and tests their github-script steps against fakes
+# of the GitHub API on every push and pull request. The reusable workflows themselves are verified by calling them
+# from a pull request of a library (README, Versioning).
 name: actionlint
 
 on:
@@ -18,3 +19,10 @@ jobs:
       - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
         with:
           args: -color
+
+  scripts:
+    name: github-script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --test test/github-scripts.test.mjs # node and yq come with the runner image

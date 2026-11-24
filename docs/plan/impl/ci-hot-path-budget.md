@@ -584,6 +584,16 @@ checks), permissions `issues: write`, `actions: read`. One `actions/github-scrip
 - The failed jobs not readable (no `actions: read`): a warning, and the issue says so; the alert
   still opens or comments.
 
+#### `test/github-scripts.test.mjs` (new), `.github/workflows/actionlint.yml` (changed)
+
+The two `github-script` steps (`Hot path budget`, the nightly alert) run under `node --test` against
+fakes of the GitHub API: the org cap, the pull request allowance, the early warning by run kind, the
+summary table, complete and partial re-runs (a carried job, a missing shard, each earlier verdict), and
+for the alert creation, comments, assignee reconciliation, issue identity per workflow ref, run
+ordering by number and attempt, a late old red run, and the failures without an assignee. The test
+reads the scripts out of the workflow files with `yq`; `actionlint.yml` gains a job `github-script
+tests` that runs it.
+
 ```mermaid
 stateDiagram-v2
     [*] --> NoIssue
@@ -951,6 +961,8 @@ govengers/.github
 ├── .github/workflows/go-service.yml            changed (WP1)
 ├── .github/workflows/go-library.yml            changed (WP1)
 ├── .github/workflows/nightly-alert.yml         new (WP1)
+├── .github/workflows/actionlint.yml            changed (WP1: the github-script tests)
+├── test/github-scripts.test.mjs                new (WP1)
 ├── README.md                                   changed (WP1, WP5)
 ├── docs/design.md                              changed (WP1)
 ├── workflow-templates/go-service.yml           changed (WP5)
