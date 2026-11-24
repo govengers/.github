@@ -389,7 +389,9 @@ jobs:
   # The browser journeys (TST-020), one job per shard. The recipe selects the journeys the change needs from
   # BASE_SHA, installs the browser and runs its shard (SHARD); the job carries Chromium's download and the records.
   browser:
-    name: browser journeys${{ inputs.browser-shards > 1 && format(' {0}/{1}', matrix.shard, inputs.browser-shards) || '' }}
+    # GitHub appends the shard to a running job: browser journeys (1). A name that reads matrix would show
+    # unevaluated on the skipped job of every caller without browser.
+    name: browser journeys
     if: inputs.browser != ''
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: *timeout
@@ -689,7 +691,7 @@ jobs:
                 e2e: ['end-to-end tests'],
                 typescript: ['TypeScript tests'],
                 recipes: (env.RECIPES ? JSON.parse(env.RECIPES) : []).map((recipe) => `just ${recipe}`),
-                browser: shards > 1 ? Array.from({ length: shards }, (_, i) => `browser journeys ${i + 1}/${shards}`) : ['browser journeys'],
+                browser: Array.from({ length: shards }, (_, i) => `browser journeys (${i + 1})`),
                 'image-build': ['build the image'],
                 image: ['build, attest and push the image'],
               }

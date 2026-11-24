@@ -383,7 +383,7 @@ Jobs:
 |--------|------|--------|
 | `lint`, `recipes` | unchanged | in hot path mode restore and save the green-run records; `timeout-minutes` |
 | `test`, `typescript`, `e2e` | unchanged | `timeout-minutes` (`e2e` keeps its own record cache steps as they are) |
-| `browser` | `browser journeys` (with more than one shard: `browser journeys 1/2`) | new |
+| `browser` | `browser journeys`; GitHub appends the shard to a running job (`browser journeys (1)`, `browser journeys (2)`). No `matrix.*` in the name: a skipped job shows its name unevaluated (seen on the first V1 run) | new |
 | `image-build` | `build the image` | new |
 | `image` | `build, attest and push the image` (unchanged) | in hot path mode it tags the digest instead of building |
 | `budget` | `pipeline budget` (unchanged) | `if` gains `&& inputs.hot-path-seconds == 0`; steps, needs and runner untouched |

@@ -67,7 +67,7 @@ function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, env 
   })
 }
 
-const allJobs = (start) => ['lint, vulncheck', 'unit tests', 'end-to-end tests', 'just db-check', 'browser journeys 1/2', 'browser journeys 2/2', 'build the image']
+const allJobs = (start) => ['lint, vulncheck', 'unit tests', 'end-to-end tests', 'just db-check', 'browser journeys (1)', 'browser journeys (2)', 'build the image']
   .map((name) => job(name, start + 5))
 const checkJob = (start, verdict, results = 'success') => job('check / lint, test, e2e, vulncheck', start, {
   steps: [{ name: 'Every job passed or was skipped by its input', conclusion: results }, ...(verdict ? [{ name: 'Hot path budget', conclusion: verdict }] : [])],
@@ -120,8 +120,8 @@ test('hot path: a re-run in which every expected job ran again is judged anew', 
 
 test('hot path: a partial re-run repeats the verdict of the attempt before', async () => {
   // Browser shard 2/2 carried over with its old timestamps; on the next attempt shard 1/2 is missing.
-  const carried = allJobs(1000).map((j) => (j.name.endsWith('2/2') ? job('browser journeys 2/2', 5) : j))
-  const missing = allJobs(1000).filter((j) => !j.name.endsWith('1/2'))
+  const carried = allJobs(1000).map((j) => (j.name.endsWith('(2)') ? job('browser journeys (2)', 5) : j))
+  const missing = allJobs(1000).filter((j) => !j.name.endsWith('(1)'))
   const failedJobs = 'hot path: attempt 1 had failed jobs, so its time is no measurement; re-run all jobs'
   for (const [jobs, verdict, results, expected] of [
     [carried, 'success', 'success', []],

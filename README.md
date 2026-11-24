@@ -84,7 +84,7 @@ On every push to the default branch the workflow force-pushes three [shields.io 
 | end-to-end tests | `just test-e2e` (`full`: `just test-e2e-all`), skipped by the recipe when server and suite equal a green run (TST-015) | `e2e: true` |
 | TypeScript tests | `just test-typescript`: the frontend's type checks, tests and build | `bun-version` set, `typescript` not false |
 | just &lt;recipe&gt; | one job per entry of `recipes` | `recipes` not empty |
-| browser journeys (`browser journeys 1/2` with shards) | `just <browser>`, one job per shard: the recipe selects the journeys the change needs; Chromium's download is cached, the Playwright report uploaded on failure | `browser` set |
+| browser journeys (running: `browser journeys (1)`, one per shard) | `just <browser>`, one job per shard: the recipe selects the journeys the change needs; Chromium's download is cached, the Playwright report uploaded on failure | `browser` set |
 | build the image | builds the image beside the checks, for every platform: a pull request exports it to a tarball, a push pushes it by digest, untagged | `hot-path-seconds` set; pull requests, pushes to the default branch, `v*` tags |
 | check / lint, test, e2e, vulncheck | fails when any job above failed or was cancelled, or when a job that `browser` or `hot-path-seconds` enables did not succeed: the one check for branch protection to require. On a hot path run its last step, `Hot path budget`, judges the run (see "Hot path") | always |
 | pipeline budget | prints every job's time and fails when the pipeline took longer than its budget plus the margin | a budget set, `hot-path-seconds` not set, not on `full` runs |
