@@ -419,8 +419,11 @@ Details, in the order of the file:
    hashFiles('**/bun.lock') }}`); `just "$RECIPE"` with `RECIPE: ${{ inputs.browser }}`,
    `BASE_SHA`, `SHARD`; on `failure()` `actions/upload-artifact@v7`, name `browser-report-${{
    matrix.shard }}`, paths `**/playwright-report/**` and `**/test-results/**` without
-   `**/node_modules/**`, 7 days; `actions/cache/save@v6` of Chromium when
-   `steps.playwright.outputs.cache-hit != 'true'` and not cancelled, keyed on the restore step's
+   `**/node_modules/**`, 7 days; a step `Chromium downloaded` (id `chromium`, when
+   `steps.playwright.outputs.cache-hit != 'true'` and not cancelled) that sets `found=true` when
+   `~/.cache/ms-playwright` holds files, since the recipe installs the browser only after its record
+   check and a skipped run downloads nothing (`hashFiles` cannot look outside the workspace);
+   `actions/cache/save@v6` of Chromium when `found` is `true`, keyed on the restore step's
    `cache-primary-key` (a second `hashFiles` after the install could take in a package's own
    lockfile); `*records-save`;
    `*cache-save` (the shards save one Go cache key; the first wins, the others log that it exists).

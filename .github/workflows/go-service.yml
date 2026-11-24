@@ -441,9 +441,17 @@ jobs:
             !**/node_modules/**
           retention-days: 7
 
+      # A run the recipe skipped on its record installs no browser: then there is nothing to save. hashFiles cannot
+      # look outside the workspace, so a shell test decides.
+      - name: Chromium downloaded
+        id: chromium
+        if: ${{ !cancelled() && steps.playwright.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: if [ -n "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]; then echo "found=true" >> "$GITHUB_OUTPUT"; fi
+
       # The key of the restore step: hashing bun.lock again after the install could take in a package's own lockfile.
       - name: Save Chromium
-        if: ${{ !cancelled() && steps.playwright.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.chromium.outputs.found == 'true' }}
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/ms-playwright
