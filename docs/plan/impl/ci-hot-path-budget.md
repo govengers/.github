@@ -747,7 +747,12 @@ No project name in any rule or template; the reference numbers speak of "the fir
   serial block and no worker limit in the configuration; what a run writes (`node_modules`, build
   output, `playwright-report`, `test-results`) is ignored by git, or it changes the next run's key;
   a further Go program the global setup runs goes into `browser_binaries`, and the recipe passes
-  its path in `sandbox/ui-e2e/` as it passes `E2E_SERVER`. The
+  its path in `sandbox/ui-e2e/` as it passes `E2E_SERVER`; the frontend the journeys run carries
+  no per-commit stamp, or `ui-e2e` builds it with a fixed one (a service that stamps its bundle:
+  `ui-build stamp=version`, `ui-e2e *flags: (ui-build "e2e")`; the template's `ui-build` stamps
+  nothing, so its justfile keeps `ui-e2e *flags: ui-build`); locally the browser is installed once
+  with `cd ui && bunx playwright install --only-shell chromium`, since the recipe installs it only
+  when `CI` is set. The
   template ships no frontend, as for `test-typescript`: the first service is the worked example,
   and it runs this recipe text (T3, T4). The lines on `ci.yml` wait for WP5.
 - `README.md`: the `TST` row of the index names the hot path, the selected journeys and the
@@ -785,24 +790,27 @@ before.
   known today: `tasks.spec.ts` "an assignment rings the bell" clears and counts the seeded admin's
   inbox while `work.spec.ts` and others give that admin work. Each such journey moves to its own
   person, or asserts on its own rows (found by their unique title) instead of on a count. Where
-  the API offers no way to create an active person, the second form is the fix. Proof: T4.
+  the API offers no way to create an active person, the second form is the fix. Proof: T4. As
+  built: the bell journey and the three assistant journeys run on `ownPerson`, the feedback
+  journey's audit row is filtered by its own object.
 - **`ui/e2e/*.spec.ts`**: one `// covers:` line each. Derive the claims per spec from the pages
   its journeys open or drive (`ui/src/router.ts`, `ui/src/domain.ts`, the components those pages
   import from `ui/src/pages`); when in doubt claim more, overlap is free. The derivation rule
   holds for claims too: a foundation spec (`accounts`, `assistant`, `operations`, `session`)
   claims no path of `derive/domain.txt`; the domain's pages are claimed by the domain's specs
   (`tasks`, `work`, `files`), which leave with the domain. Otherwise a derived application's
-  `browser-select` fails on a claim of a removed page. Starting point:
+  `browser-select` fails on a claim of a removed page. As built (the starting point plus what the
+  page imports showed; every added path was already claimed by another spec):
 
   | Spec | Claims |
   |------|--------|
-  | `accounts.spec.ts` | `ui/src/pages/Users ui/src/pages/Account` |
-  | `assistant.spec.ts` | `ui/src/pages/Assistant` |
-  | `files.spec.ts` | `ui/src/pages/Task ui/src/pages/Board` |
+  | `accounts.spec.ts` | `ui/src/pages/Users ui/src/pages/Account ui/src/pages/Profile ui/src/LoginRoute.vue ui/src/pages/LoginPage` |
+  | `assistant.spec.ts` | `ui/src/pages/Assistant ui/src/pages/Profile` |
+  | `files.spec.ts` | `ui/src/pages/Task ui/src/pages/Board ui/src/pages/Tracker ui/src/domain.ts` |
   | `operations.spec.ts` | `ui/src/pages/Feedback ui/src/pages/Audit ui/src/pages/Logs ui/src/pages/Jobs ui/src/pages/Webhooks ui/src/pages/Changelog ui/src/pages/Settings changelog VERSION` |
-  | `session.spec.ts` | `ui/src/LoginRoute.vue ui/src/pages/LoginPage ui/src/pages/Profile` |
-  | `tasks.spec.ts` | `ui/src/pages/Task ui/src/pages/Tasks ui/src/pages/Board ui/src/pages/Project ui/src/pages/Projects ui/src/pages/Profile ui/src/domain.ts` |
-  | `work.spec.ts` | `ui/src/pages/Tracker ui/src/pages/Task ui/src/pages/Board` |
+  | `session.spec.ts` | `ui/src/LoginRoute.vue ui/src/pages/LoginPage ui/src/pages/Profile ui/src/pages/Account` |
+  | `tasks.spec.ts` | `ui/src/pages/Task ui/src/pages/Tasks ui/src/pages/Board ui/src/pages/Project ui/src/pages/Projects ui/src/pages/Profile ui/src/domain.ts ui/src/pages/Tracker` |
+  | `work.spec.ts` | `ui/src/pages/Tracker ui/src/pages/Task ui/src/pages/Board ui/src/domain.ts` |
 
 - **`ui/playwright.config.ts`**: the header comment names the selection and that the recipe sets
   the global timeout; the configured `globalTimeout` stays for a bare `playwright test`.
@@ -813,16 +821,21 @@ before.
     "180000"`, `derive_inputs := "hack/derive.sh hack/stripdomain derive"`, and
     `browser_unaffected`: every top-level entry of `git ls-files` that is Go code or embedded in
     the binaries, or that no journey process reads, expected `cmd internal pkg test hack docs
-    derive docker .github go.mod go.sum sqlc.yaml openapi.yaml README.md CLAUDE.md ui/test`; not
-    the justfile, `ui`, `changelog`, `VERSION`. The recipe builds the scratch database tool to
-    `sandbox/ui-e2e/scratchdb` and passes its path as `E2E_SCRATCHDB`; `ui/e2e/global-setup.ts`
-    runs that binary instead of `go run ./hack/scratchdb`, so what the key hashes is what runs.
+    derive docker .github go.mod go.sum sqlc.yaml openapi.yaml README.md CLAUDE.md ui/test`, as
+    built also `examples .claude .dockerignore .golangci.yml .govengers.yml llms.go llms.txt
+    llms_test.go markers.go LICENSE`; not the justfile, `ui`, `changelog`, `VERSION`, and not
+    `.gitignore` or `.gitattributes` (they decide which files the key sees). The recipe builds the
+    scratch database tool to `sandbox/ui-e2e/scratchdb` and passes its path as `E2E_SCRATCHDB`;
+    `ui/e2e/global-setup.ts` runs that binary instead of `go run ./hack/scratchdb`, so what the key
+    hashes is what runs, and fails without `E2E_SCRATCHDB` (no `go run` fallback).
   - `browser-select` as in the template.
   - `browser-select-check`: the cases T2 of section 9, on foundation specs and foundation paths
     only, so it passes unchanged in a derived application; it sets `FULL=false` for the partial
     cases and `FULL=true` for the one that expects `all`, so it also passes inside a full run; a dependency of `ui-check` (the
     pattern of `dev-check`).
-  - `ui-e2e`: takes over `ui-ci`'s record logic with the key of section 6 (frontend first, then
+  - `ui-build` gains `stamp=version`: holo's bundle embeds `VITE_APP_VERSION` with the commit, so
+    a stamped build changed the key on every commit.
+  - `ui-e2e *flags: (ui-build "e2e")`: takes over `ui-ci`'s record logic with the key of section 6 (frontend first, then
     the binaries, then the key; `ui-ci` built the key's server before the frontend, which made the
     key depend on the previous run's build), depends on `install-typst` and always sets `E2E_TYPST` (a selected run
     may contain the document journeys), installs Chromium when `CI` is set, passes the flags of
@@ -834,7 +847,8 @@ before.
   - `derive-check`: no longer depends on `derive-sample`; it looks up its record first (key
     `shasum` of the files below `derive_inputs` and of the justfile, `sandbox/derive-passed/<key>`,
     ignored when `FULL=true`), prints the skip and exits before any derivation, else calls
-    `derive-sample`, runs as today and writes the record.
+    `derive-sample`, runs as today and writes the record. With flags it neither reads nor writes a
+    record.
   - `check` keeps its list (`ui-e2e` is now the selected run).
 - **`.github/workflows/ci.yml`**: `workflow_dispatch`; `full` true for schedule, dispatch and
   tags; `concurrency.group: ci-${{ github.ref }}-${{ github.event_name }}`; the `typescript`
@@ -860,12 +874,17 @@ before.
 - **`docker/server.Dockerfile`**: the `ui` stage runs `vite build` only (the type check is
   `ui-check`'s and gates the tags; it cost part of the 36 to 43 s in every image); the comment on
   the cache mount as in the template.
+- **`cmd/server/application.go`**: the socket admits 64 requests in flight
+  (`server.MaximumRequestsInFlight` = `SubscriptionsPerSocket`, holo design H125): the task page
+  sends about 23 joins at once, and livewire's client never re-sends a refused one; T4 failed
+  without it.
+- **`go.mod`, `go.sum`**: `github.com/gorilla/websocket` bumped to
+  `v1.5.4-0.20240701034025-d67f41855da4` (GO-2026-6278, red on main too).
 - **Docs**: `docs/testing.md` (requirements line, Budgets "Per pipeline", Rules 7, 8 and 12, the
-  CI table, Measured: the new runs of WP4), `docs/design.md` (a new decision with the next free H
-  number that replaces H61's last paragraph: frontend as TypeScript job plus browser job, image
+  CI table, Measured: the new runs of WP4), `docs/design.md` (a new decision, H124, that replaces H61's last paragraph: frontend as TypeScript job plus browser job, image
   built on pull requests; H117: `image-check` stays local), `docs/dependencies.md` (the rows on
   the pin and on the recipe job's caches are resolved), `docs/deployment.md` (pull requests build
-  the image), `README.md` (the recipe table), `docs/upgrading/<next number>-ci-hot-path.md` (the
+  the image), `README.md` (the recipe table), `docs/upgrading/0002-ci-hot-path.md` (the
   note a derived application replays: justfile recipes, `ci.yml`, the claim lines, the helper).
 
 ### WP4 Measured numbers
@@ -1018,6 +1037,8 @@ govengers/holo
 ├── .github/workflows/ci.yml                    changed (WP3a pin, WP3b)
 ├── justfile                                    changed
 ├── docker/server.Dockerfile                    changed
+├── cmd/server/application.go                   changed (64 requests in flight per socket)
+├── go.mod, go.sum                              changed (gorilla/websocket)
 ├── ui/playwright.config.ts                     changed (comment)
 ├── ui/e2e/helpers.ts                           changed (ownPerson)
 ├── ui/e2e/global-setup.ts                      changed (E2E_SCRATCHDB)
@@ -1033,7 +1054,7 @@ govengers/holo
 ├── docs/design.md                              changed
 ├── docs/dependencies.md                        changed
 ├── docs/deployment.md                          changed
-└── docs/upgrading/<next>-ci-hot-path.md        new
+└── docs/upgrading/0002-ci-hot-path.md          new
 ```
 
 ## 14. Decisions
