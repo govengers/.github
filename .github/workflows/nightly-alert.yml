@@ -1,0 +1,154 @@
+# Reusable alert for the full runs of a CI workflow (standards TST-021): a red scheduled or dispatched run opens an
+# issue assigned to the logins in `assignees`, every further red run comments on it, and the first later green run
+# closes it. One issue per monitored workflow and ref, labelled nightly-ci and found by the marker in its body, so a
+# probe on a branch never touches the default branch's issue. Runs are ordered by run number, then attempt: an older
+# run that finishes late neither closes an issue nor opens one that a newer green run already closed.
+#
+# Called by a second job of the caller's ci.yml after its CI job, on schedule and dispatch only; the caller snippet
+# is in the README, "Nightly alert". The caller grants issues: write and actions: read (the failed jobs).
+#
+# The job fails, red run or green, when no login can be assigned or the open issue has no assignee: a red run would
+# reach nobody.
+name: Nightly alert
+
+on:
+  workflow_call:
+    inputs:
+      result:
+        description: the result of the caller's CI job, needs.<ci job>.result
+        type: string
+        required: true
+      assignees:
+        description: comma separated GitHub logins that get the issue, e.g. vars.CI_ALERT_ASSIGNEES
+        type: string
+        required: true
+
+jobs:
+  alert:
+    name: nightly alert
+    # The runner kind of the checks; the script needs neither gh nor jq.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      issues: write
+      actions: read
+    # Two runs never reconcile the same issue at once.
+    concurrency:
+      group: nightly-alert-${{ github.workflow_ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RESULT: ${{ inputs.result }}
+          ASSIGNEES: ${{ inputs.assignees }}
+          WORKFLOW: ${{ github.workflow }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        with:
+          script: |
+            const env = process.env
+            const { owner, repo } = context.repo
+            const label = 'nightly-ci'
+            const marker = `<!-- nightly-alert ${env.WORKFLOW_REF} -->`
+            const thisRun = { number: context.runNumber, attempt: Number(env.GITHUB_RUN_ATTEMPT) }
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}/attempts/${thisRun.attempt}`
+            const problems = []
+
+            // Runs compare by number, then attempt: a re-run of a red run is newer than it.
+            const id = (run) => `${run.number}.${run.attempt}`
+            const newer = (a, b) => !b || a.number > b.number || (a.number === b.number && a.attempt > b.attempt)
+            const pattern = (name) => new RegExp(`<!-- ${name} (\\d+)\\.(\\d+) -->`)
+            const readRun = (body, name) => {
+              const found = (body || '').match(pattern(name))
+              return found ? { number: Number(found[1]), attempt: Number(found[2]) } : null
+            }
+            const writeRun = (body, name, run) => {
+              const tag = `<!-- ${name} ${id(run)} -->`
+              return pattern(name).test(body) ? body.replace(pattern(name), tag) : `${body}\n${tag}`
+            }
+
+            // First, before any change: only logins that can be assigned are used.
+            const assignees = []
+            const logins = env.ASSIGNEES.split(',').map((login) => login.trim()).filter(Boolean)
+            for (const login of logins) {
+              try {
+                await github.rest.issues.checkUserCanBeAssigned({ owner, repo, assignee: login })
+                assignees.push(login)
+              } catch (error) {
+                if (error.status !== 404) throw error
+                problems.push(`${login} cannot be assigned in ${owner}/${repo}`)
+              }
+            }
+            if (assignees.length === 0) problems.push('no login in assignees can be assigned')
+
+            const marked = async (state) => (await github.paginate(github.rest.issues.listForRepo,
+              { owner, repo, state, labels: label, per_page: 100 })).filter((issue) => !issue.pull_request && (issue.body || '').includes(marker))
+            let issue = (await marked('open'))[0]
+
+            const failedJobs = async () => {
+              try {
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+                  { owner, repo, run_id: context.runId, attempt_number: thisRun.attempt, per_page: 100 })
+                const failed = jobs.filter((job) => job.conclusion && !['success', 'skipped', 'neutral'].includes(job.conclusion))
+                return failed.map((job) => `- [${job.name}](${job.html_url}): ${job.conclusion}`).join('\n') || '- none listed, see the run'
+              } catch (error) {
+                core.warning(`nightly alert: the run's jobs are not readable (${error.message}); the caller must grant actions: read`)
+                return '- not readable, see the run'
+              }
+            }
+
+            if (env.RESULT === 'failure') {
+              const jobs = await failedJobs()
+              if (!issue) {
+                const closedBy = (await marked('closed')).map((closed) => readRun(closed.body, 'closed-by-run')).filter(Boolean)
+                  .reduce((newest, run) => (newer(run, newest) ? run : newest), null)
+                if (closedBy && newer(closedBy, thisRun)) {
+                  core.info(`Run ${id(thisRun)} is older than run ${id(closedBy)}, which closed the last issue: nothing to report.`)
+                } else {
+                  try {
+                    await github.rest.issues.getLabel({ owner, repo, name: label })
+                  } catch (error) {
+                    if (error.status !== 404) throw error
+                    await github.rest.issues.createLabel({ owner, repo, name: label, color: 'b60205', description: 'A full CI run is red' })
+                  }
+                  const body = [
+                    `${env.WORKFLOW} failed on \`${env.REF_NAME}\`: ${runUrl}`,
+                    '',
+                    'Failed jobs:',
+                    jobs,
+                    '',
+                    'Every further red run of this workflow on this ref comments here; the first later green run closes the issue.',
+                    '',
+                    marker,
+                    `<!-- last-red-run ${id(thisRun)} -->`,
+                  ].join('\n')
+                  issue = (await github.rest.issues.create({ owner, repo, title: `${env.WORKFLOW} is red on ${env.REF_NAME}`, body, labels: [label], assignees })).data
+                  core.info(`Opened #${issue.number}.`)
+                }
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: `Red again: ${runUrl}\n\nFailed jobs:\n${jobs}` })
+                if (newer(thisRun, readRun(issue.body, 'last-red-run'))) {
+                  issue = (await github.rest.issues.update({ owner, repo, issue_number: issue.number, body: writeRun(issue.body, 'last-red-run', thisRun) })).data
+                }
+                const missing = assignees.filter((login) => !issue.assignees.some((assignee) => assignee.login.toLowerCase() === login.toLowerCase()))
+                if (missing.length > 0) {
+                  issue = (await github.rest.issues.addAssignees({ owner, repo, issue_number: issue.number, assignees: missing })).data
+                }
+                core.info(`Commented on #${issue.number}.`)
+              }
+            } else if (env.RESULT === 'success' && issue) {
+              const lastRed = readRun(issue.body, 'last-red-run')
+              if (newer(thisRun, lastRed)) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: `green again: ${runUrl}` })
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, body: writeRun(issue.body, 'closed-by-run', thisRun), state: 'closed', state_reason: 'completed' })
+                core.info(`Closed #${issue.number}.`)
+                issue = null
+              } else {
+                core.info(`Run ${id(thisRun)} is older than the red run ${id(lastRed)}: #${issue.number} stays open.`)
+              }
+            }
+
+            // Last, on every run: a red run must reach somebody.
+            if (issue && issue.assignees.length === 0) problems.push(`#${issue.number} has no assignee`)
+            if (problems.length > 0) {
+              core.setFailed(`nightly alert: ${problems.join('; ')}; a red run would reach nobody (CI_ALERT_ASSIGNEES)`)
+            }

@@ -551,7 +551,7 @@ Reusable workflow `Nightly alert`, called by a second job of the caller's `ci.ym
 job. Inputs: `result` (string, required): `needs.<ci job>.result`; `assignees` (string, required):
 comma separated GitHub logins, in the starters `${{ vars.CI_ALERT_ASSIGNEES }}`. One job `alert`,
 name `nightly alert`, `runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}` (the runner kind of the
-checks), permissions `issues: write`, `actions: read`. One `actions/github-script@v8` step:
+checks), permissions `issues: write`, `actions: read`. One `actions/github-script@v9` step:
 
 - Job `concurrency`: group `nightly-alert-${{ github.workflow_ref }}`, `cancel-in-progress:
   false`: two runs never reconcile the same issue at once.
@@ -564,8 +564,9 @@ checks), permissions `issues: write`, `actions: read`. One `actions/github-scrip
 - First, before any change: `assignees` is split at commas and trimmed, and every login is checked
   with the assignability endpoint (`GET /repos/{owner}/{repo}/assignees/{login}`); the valid ones
   are used.
-- `result` is `failure`: no such issue: when the newest closed issue with the marker was closed
-  by a newer run than this one, nothing (a late old red run); else create the label if missing,
+- `result` is `failure`: no such issue: when the newest `closed-by-run` among the closed issues
+  with the marker is a newer run than this one, nothing (a late old red run; an issue a person
+  closed carries no `closed-by-run` and does not count); else create the label if missing,
   then the issue, body: the
   run's URL, the ref, the failed jobs of the attempt with their links, the sentence that every
   further red run comments and the first later green run closes it, and both markers. An issue is
@@ -580,6 +581,8 @@ checks), permissions `issues: write`, `actions: read`. One `actions/github-scrip
 - Last, on every run, red or green: no valid login, or a login that cannot be assigned, or an
   open issue that still has no assignee: fail with `nightly alert: <what>; a red run would reach
   nobody (CI_ALERT_ASSIGNEES)`.
+- The failed jobs not readable (no `actions: read`): a warning, and the issue says so; the alert
+  still opens or comments.
 
 ```mermaid
 stateDiagram-v2
