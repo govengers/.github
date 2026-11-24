@@ -420,7 +420,9 @@ Details, in the order of the file:
    `BASE_SHA`, `SHARD`; on `failure()` `actions/upload-artifact@v7`, name `browser-report-${{
    matrix.shard }}`, paths `**/playwright-report/**` and `**/test-results/**` without
    `**/node_modules/**`, 7 days; `actions/cache/save@v6` of Chromium when
-   `steps.playwright.outputs.cache-hit != 'true'` and not cancelled; `*records-save`;
+   `steps.playwright.outputs.cache-hit != 'true'` and not cancelled, keyed on the restore step's
+   `cache-primary-key` (a second `hashFiles` after the install could take in a package's own
+   lockfile); `*records-save`;
    `*cache-save` (the shards save one Go cache key; the first wins, the others log that it exists).
    The recipe installs the browser, the workflow only carries its directory.
 4. **`image-build` job.** `if: inputs.hot-path-seconds > 0 && (github.event_name ==
@@ -437,7 +439,9 @@ Details, in the order of the file:
    5. `actions/cache/restore@v6`, id `mounts`: path `sandbox/image-mounts`, key
       `<prefix>-${{ github.sha }}` with `<prefix>` = `image-mounts-${{ runner.os }}-${{
       hashFiles(inputs.dockerfile) }}`, restore keys `<prefix>-` and `image-mounts-${{ runner.os
-      }}-`. `cache` is `warm` when `cache-matched-key` starts with `<prefix>-`, else `cold`.
+      }}-`. `cache` is `warm` when `cache-matched-key` starts with `<prefix>-`, else `cold`. A step
+      `Compile cache key` (id `mounts-key`) before it writes `<prefix>` to its output, as
+      `cache-paths` does for the Go caches: a job output cannot call `hashFiles`.
    6. `Inject the compile cache`, when `sandbox/image-mounts/go-build` holds files: one
       `docker buildx build` with the directory as context, `--build-arg STAMP=${{ github.run_id
       }}-${{ github.run_attempt }}` and an inline Dockerfile: a digest-pinned `busybox` from
@@ -493,7 +497,7 @@ Details, in the order of the file:
      push to the default branch or a `v*` tag. The step gets three expressions as environment
      (`EXPECT_BROWSER`, `EXPECT_IMAGE_BUILD`, `EXPECT_IMAGE`) and fails with the job's name when
      one is true and the result is not `success`.
-   - Step `Hot path budget`, `if: ${{ always() && (HOT) }}`, one `actions/github-script@v8` step
+   - Step `Hot path budget`, `if: ${{ always() && (HOT) }}`, one `actions/github-script@v9` step
      (no `gh`, no `jq`: the self-hosted image is not assumed to have them), in this order:
      1. `hot-path-seconds` above 600: fail with `hot path: hot-path-seconds is <n>, above the org
         cap of 600 s (TST-018)`.

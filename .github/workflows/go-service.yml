@@ -1,15 +1,25 @@
 # Reusable CI for govengers Go services, in parallel jobs: lint and vulncheck, unit tests, the end-to-end suite
-# unless unchanged, the TypeScript tests with bun-version, and one job per extra recipe; a check job stands for
-# them all, under the name of v1's single check, for branch protection. Pushes to the default
-# branch publish the badges; pushes to the default branch and v* tags then build, attest and push the image:
-# :main on main, :1.2.3 on a v1.2.3 tag, and :1.2, :1 and :latest only when the tag is the newest release they
-# cover. With a budget, a last job prints every job's time and fails a pipeline that took too long.
+# unless unchanged, the TypeScript tests with bun-version, one job per extra recipe and, with browser, one job per
+# shard of the browser journeys; a check job stands for them all, under the name of v1's single check, for branch
+# protection. Pushes to the default branch publish the badges; pushes to the default branch and v* tags then
+# build, attest and push the image: :main on main, :1.2.3 on a v1.2.3 tag, and :1.2, :1 and :latest only when the
+# tag is the newest release they cover. With a budget, a last job prints every job's time and fails a pipeline
+# that took too long.
+#
+# Hot path mode, with hot-path-seconds above 0 (standards TST-018): a pull request or a push to the default branch
+# is a hot path run. The image is built beside the checks (pull requests: every platform exported, nothing pushed;
+# pushes: pushed by digest, untagged), and the image job only tags and attests that digest once every check passed.
+# check judges the run from its start to check's last step against hot-path-seconds (at most 600, 60 s less on a
+# pull request) and the warm and cold budgets. Jobs that run the repository's code time out after 10 minutes on a
+# hot path run and after 60 on any other run; the lint, recipe and browser jobs carry their green-run records.
 #
 # Contract with the calling repo: the justfile recipes of go-library.yml (govengers/standards templates/service),
-# plus any recipe named in `recipes`. Every recipe sees FULL=true on a full run.
+# plus any recipe named in `recipes` and in `browser`. Every recipe sees FULL=true on a full run. The recipe and
+# browser jobs also see BASE_SHA, the commit to compare the checkout with (the pull request's base, or the commit
+# before the push), and a browser job SHARD, its shard of browser-shards (1/2).
 #
 # The caller grants: contents: write (badges), packages: write, id-token: write, attestations: write, and with a
-# budget actions: read (the run's job times).
+# budget or hot-path-seconds actions: read (the run's job times).
 name: Go service
 
 on:
@@ -63,13 +73,25 @@ on:
         description: overrun of the budget tolerated before the pipeline fails
         type: number
         default: 20
+      hot-path-seconds:
+        description: hot path mode and its cap in seconds, at most 600 (TST-018); the image is built beside the checks, on pull requests too, check fails a pull request or default-branch push over the cap (60 s less on a pull request), jobs time out. 0 (the default) keeps today's pipeline
+        type: number
+        default: 0
+      browser:
+        description: justfile recipe that runs the browser journeys, e.g. ui-e2e, in its own job per shard. Empty (the default) runs none
+        type: string
+        default: ""
+      browser-shards:
+        description: Playwright shards of the browser journeys, 1 to 8, one job each; the recipe sees SHARD=<n>/<browser-shards>
+        type: number
+        default: 1
 
 # Runner: the jobs that run the repository's code take the runs-on label in the caller's CI_RUNNER variable
 # (org or repo; the govengers org sets the fuji self-hosted runners), ubuntu-latest when it is unset. A pull
 # request from a fork always runs on ubuntu-latest: self-hosted runners must never run code of an outside fork.
 
-# No workflow-wide permissions: every job names its own, except budget, which takes the caller's grant
-# (actions: read) and runs no code of the calling repository.
+# No workflow-wide permissions: every job names its own, except budget and check, which take the caller's grant
+# (actions: read) and run no code of the calling repository.
 
 env:
   FULL: ${{ inputs.full }}
@@ -78,10 +100,15 @@ jobs:
   lint:
     name: lint, vulncheck
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Every job that runs the repository's code: 10 minutes on a hot path run (a pull request or a push to the
+    # default branch with hot-path-seconds), 60 on any other run with hot-path-seconds, GitHub's default of 360
+    # without it. Not an input, and full does not change it (design S14).
+    timeout-minutes: &timeout ${{ inputs.hot-path-seconds > 0 && ((inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))) && 10 || 60) || 360 }}
     permissions:
       contents: read
     env:
       CACHE_JOB: lint
+      RECORDS_JOB: lint
     # The setup steps are anchored here and reused by every Go job: a reusable workflow cannot call a local
     # action of its own repository (./ is the caller's checkout).
     steps:
@@ -142,6 +169,19 @@ jobs:
             ${{ steps.cache-paths.outputs.key }}-
             go-${{ env.CACHE_JOB }}-${{ runner.os }}-
 
+      # Green-run records, only in hot path mode: a recipe skips what equals a recorded green run (TST-015, e.g.
+      # sandbox/vulncheck-passed) and ignores the records on a full run, whose green records are saved too. One key
+      # per job (RECORDS_JOB), with run id and attempt, so neither a later run on the same commit nor a re-run fails
+      # to save. A caller without hot-path-seconds carries none: its recipes run in CI as before (design S12).
+      - &records-restore
+        name: Restore the green-run records
+        if: inputs.hot-path-seconds > 0
+        uses: actions/cache/restore@v6
+        with:
+          path: sandbox/*-passed
+          key: passed-${{ env.RECORDS_JOB }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: passed-${{ env.RECORDS_JOB }}-
+
       - &just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
@@ -164,6 +204,14 @@ jobs:
 
       - run: just vulncheck
 
+      - &records-save
+        name: Save the green-run records
+        if: ${{ !cancelled() && inputs.hot-path-seconds > 0 && hashFiles('sandbox/*-passed/**') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: sandbox/*-passed
+          key: passed-${{ env.RECORDS_JOB }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
       # Pushes to the default branch save; a pull request saves only when it found no cache of its Go release and go.sum
       # (a cold run), so its next push is warm and pull requests do not crowd the default branch's caches out.
       - &cache-save
@@ -177,6 +225,7 @@ jobs:
   test:
     name: unit tests
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
     permissions:
       contents: read
     env:
@@ -229,6 +278,7 @@ jobs:
     name: end-to-end tests
     if: inputs.e2e
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
     permissions:
       contents: read
     env:
@@ -293,6 +343,7 @@ jobs:
     name: TypeScript tests
     if: inputs.bun-version != '' && inputs.typescript
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
     permissions:
       contents: read
     steps:
@@ -305,6 +356,7 @@ jobs:
     name: just ${{ matrix.recipe }}
     if: inputs.recipes != '' && fromJSON(inputs.recipes)[0] != null # GitHub fails an empty matrix
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
     permissions:
       contents: read
     strategy:
@@ -313,7 +365,9 @@ jobs:
         recipe: ${{ fromJSON(inputs.recipes) }}
     env:
       CACHE_JOB: recipe-${{ matrix.recipe }}
+      RECORDS_JOB: recipe-${{ matrix.recipe }}
       BASE_REF: ${{ github.base_ref }} # the pull request's base branch, for checks against it (empty on a push)
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }} # the pull request's base commit, or the commit before the push
     steps:
       - uses: actions/checkout@v7
         with:
@@ -322,35 +376,348 @@ jobs:
       - *setup-go
       - *cache-paths
       - *cache-restore
+      - *records-restore
       - *just
       - *bun
       - *golangci-lint
       - run: just "$RECIPE"
         env:
           RECIPE: ${{ matrix.recipe }}
+      - *records-save
       - *cache-save
+
+  # The browser journeys (TST-020), one job per shard. The recipe selects the journeys the change needs from
+  # BASE_SHA, installs the browser and runs its shard (SHARD); the job carries Chromium's download and the records.
+  browser:
+    name: browser journeys${{ inputs.browser-shards > 1 && format(' {0}/{1}', matrix.shard, inputs.browser-shards) || '' }}
+    if: inputs.browser != ''
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Expressions have no arithmetic, so the shards come from a lookup; a count outside 1 to 8 yields no matrix
+        # and fails the run at once.
+        shard: ${{ fromJSON('{"1":[1],"2":[1,2],"3":[1,2,3],"4":[1,2,3,4],"5":[1,2,3,4,5],"6":[1,2,3,4,5,6],"7":[1,2,3,4,5,6,7],"8":[1,2,3,4,5,6,7,8]}')[format('{0}', inputs.browser-shards)] }}
+    env:
+      CACHE_JOB: browser
+      RECORDS_JOB: browser-${{ matrix.shard }}-of-${{ inputs.browser-shards }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # BASE_SHA, to tell which journeys the change needs
+      - *go-version
+      - *setup-go
+      - *cache-paths
+      - *cache-restore
+      - *records-restore
+      - *just
+      - *bun
+
+      # The recipe installs the browser; the workflow only carries its directory.
+      - name: Restore Chromium
+        id: playwright
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+
+      - run: just "$RECIPE"
+        env:
+          RECIPE: ${{ inputs.browser }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SHARD: ${{ matrix.shard }}/${{ inputs.browser-shards }}
+
+      - name: Upload the browser report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-report-${{ matrix.shard }}
+          path: |
+            **/playwright-report/**
+            **/test-results/**
+            !**/node_modules/**
+          retention-days: 7
+
+      # The key of the restore step: hashing bun.lock again after the install could take in a package's own lockfile.
+      - name: Save Chromium
+        if: ${{ !cancelled() && steps.playwright.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.cache-primary-key }}
+
+      - *records-save
+      # The shards save one key: the first wins, the others log that it exists.
+      - *cache-save
+
+  # Hot path mode: the image is built beside the checks, so the pipeline takes the longer of the two instead of
+  # their sum (design S9). A pull request exports every platform to a tarball and pushes nothing; a push pushes the
+  # image by digest, untagged, and the image job tags it once every check passed. The Go compile cache travels as an
+  # actions/cache entry, copied into the builder's cache mount before the build and out of it afterwards; no layer
+  # cache (design S10).
+  image-build:
+    name: build the image
+    if: ${{ inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')))) }}
+    runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
+    permissions:
+      contents: read
+      packages: write # push by digest; every caller grants it for the image job
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      cache: ${{ startsWith(steps.mounts.outputs.cache-matched-key, format('{0}-', steps.mounts-key.outputs.prefix)) && 'warm' || 'cold' }}
+    env:
+      # Pulled from Amazon's mirror of the Docker library: no Docker Hub pull limit.
+      BUSYBOX: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      # Keeps the transfer layers from being reused; --no-cache would empty the cache mounts instead.
+      STAMP: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - *checkout
+
+      - id: buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - if: github.event_name == 'push'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The labels only, with the image job's version label; the image job decides the tags.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ inputs.image }}
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Compile cache key
+        id: mounts-key
+        shell: bash
+        run: echo "prefix=image-mounts-${RUNNER_OS}-${DOCKERFILE_HASH}" >> "$GITHUB_OUTPUT"
+        env:
+          DOCKERFILE_HASH: ${{ hashFiles(inputs.dockerfile) }}
+
+      # Warm: a cache of this Dockerfile. Without one, any Dockerfile's cache still brings most packages.
+      - name: Restore the compile cache
+        id: mounts
+        uses: actions/cache/restore@v6
+        with:
+          path: sandbox/image-mounts
+          key: ${{ steps.mounts-key.outputs.prefix }}-${{ github.sha }}
+          restore-keys: |
+            ${{ steps.mounts-key.outputs.prefix }}-
+            image-mounts-${{ runner.os }}-
+
+      # Cache mounts are keyed by their target inside the builder, so the service's build finds these files under
+      # the target of the service template's Dockerfile. A Dockerfile without that mount builds as before, uncached.
+      - name: Inject the compile cache
+        shell: bash
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A sandbox/image-mounts/go-build 2>/dev/null)" ]; then
+            echo "No compile cache restored: the build compiles cold."
+            exit 0
+          fi
+          docker buildx build --builder "$BUILDER" --progress plain --output type=cacheonly \
+            --build-arg "STAMP=$STAMP" --file - sandbox/image-mounts/go-build <<EOF
+          FROM ${BUSYBOX}
+          ARG STAMP
+          RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=bind,target=/in echo "\$STAMP" && cp -a /in/. /root/.cache/go-build/
+          EOF
+
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          outputs: ${{ github.event_name == 'push' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', inputs.image) || format('type=oci,dest={0}/image.tar', runner.temp) }}
+
+      # The save rule of the Go caches: a push to the default branch, or a pull request that found no cache of
+      # this Dockerfile (a cold run).
+      - name: Extract the compile cache
+        id: extract
+        if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'pull_request' && !startsWith(steps.mounts.outputs.cache-matched-key, format('{0}-', steps.mounts-key.outputs.prefix)))) }}
+        shell: bash
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          rm -rf sandbox/image-mounts/go-build
+          mkdir -p sandbox/image-mounts/go-build "$RUNNER_TEMP/empty-context"
+          docker buildx build --builder "$BUILDER" --progress plain --build-arg "STAMP=$STAMP" \
+            --output type=local,dest=sandbox/image-mounts/go-build --file - "$RUNNER_TEMP/empty-context" <<EOF
+          FROM ${BUSYBOX}
+          ARG STAMP
+          RUN --mount=type=cache,target=/root/.cache/go-build echo "\$STAMP" && mkdir /out && cp -a /root/.cache/go-build/. /out/
+          FROM scratch
+          COPY --from=0 /out /
+          EOF
+          files=$(find sandbox/image-mounts/go-build -type f | wc -l | tr -d ' ')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          if [ "$files" -eq 0 ]; then
+            echo "::warning title=Compile cache::the build left /root/.cache/go-build empty, so nothing is saved; a Dockerfile without that cache mount builds uncached"
+          else
+            echo "Extracted $files files of the compile cache."
+          fi
+
+      - name: Save the compile cache
+        if: ${{ !cancelled() && steps.extract.outputs.files > 0 }}
+        uses: actions/cache/save@v6
+        with:
+          path: sandbox/image-mounts
+          key: ${{ steps.mounts-key.outputs.prefix }}-${{ github.sha }}
 
   # One check that stands for all of the above, so branch protection can require it whatever jobs the inputs
   # add. It keeps the name of v1's single check (go-service / check / lint, test, e2e, vulncheck). always(): a
-  # skipped required check counts as passed, so it must not be skipped when the run is cancelled.
+  # skipped required check counts as passed, so it must not be skipped when the run is cancelled. It needs image
+  # too, so on a push its clock ends after the pushed tags. No permissions of its own: in hot path mode it reads the
+  # run's jobs with the caller's grant (actions: read), like budget; it checks out nothing (design S3, S15). In hot
+  # path mode it runs on the checks' runner kind, so no second kind of runner sits in the span it judges.
   check:
     name: check / lint, test, e2e, vulncheck
-    needs: [lint, test, e2e, typescript, recipes]
+    needs: [lint, test, e2e, typescript, recipes, browser, image-build, image]
     if: always()
-    runs-on: ubuntu-latest
-    permissions: {}
+    runs-on: ${{ inputs.hot-path-seconds > 0 && ((!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.hot-path-seconds > 0 && 5 || 360 }}
     steps:
+      # Without hot-path-seconds the image job's result is not part of the verdict, as before. A job that only a new
+      # input switches on must have succeeded when the inputs and the event enable it: its skip does not pass.
       - name: Every job passed or was skipped by its input
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RESULTS: ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.e2e.result }} ${{ needs.typescript.result }} ${{ needs.recipes.result }} ${{ needs.browser.result }} ${{ needs.image-build.result }} ${{ inputs.hot-path-seconds > 0 && needs.image.result || 'skipped' }}
+          EXPECT_BROWSER: ${{ inputs.browser != '' }}
+          EXPECT_IMAGE_BUILD: ${{ inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')))) }}
+          EXPECT_IMAGE: ${{ inputs.hot-path-seconds > 0 && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
+          BROWSER: ${{ needs.browser.result }}
+          IMAGE_BUILD: ${{ needs.image-build.result }}
+          IMAGE: ${{ needs.image.result }}
         run: |
           echo "results: $RESULTS"
           if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* ]]; then exit 1; fi
+          failed=0
+          enabled() { if [ "$2" = true ] && [ "$3" != success ]; then echo "check: $1 is $3, but the inputs and the event enable it" >&2; failed=1; fi; }
+          enabled "browser journeys" "$EXPECT_BROWSER" "$BROWSER"
+          enabled "build the image" "$EXPECT_IMAGE_BUILD" "$IMAGE_BUILD"
+          enabled "build, attest and push the image" "$EXPECT_IMAGE" "$IMAGE"
+          exit "$failed"
+
+      # The hot path cap (TST-018), judged inside the required check, so a pull request over it cannot merge. The
+      # span runs from the run's start to the verdict below: every queue, the image job's turn and this job's own
+      # runner count. A re-run attempt is judged anew only when every expected job ran again; otherwise the verdict
+      # of the attempt before stands (design S15).
+      - name: Hot path budget
+        if: ${{ always() && (inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))) }}
+        uses: actions/github-script@v9
+        env:
+          HOT_PATH_SECONDS: ${{ inputs.hot-path-seconds }}
+          WARM_BUDGET: ${{ inputs.budget-warm-seconds }}
+          COLD_BUDGET: ${{ inputs.budget-cold-seconds }}
+          MARGIN_PERCENT: ${{ inputs.budget-margin-percent }}
+          TEST_CACHE: ${{ needs.test.outputs.cache || 'cold' }}
+          IMAGE_CACHE: ${{ needs.image-build.outputs.cache || 'cold' }}
+          NEEDS: ${{ toJSON(needs) }}
+          RECIPES: ${{ inputs.recipes }}
+          BROWSER_SHARDS: ${{ inputs.browser-shards }}
+        with:
+          script: |
+            const env = process.env
+            const { owner, repo } = context.repo
+            const attempt = Number(env.GITHUB_RUN_ATTEMPT)
+            const hotPathSeconds = Number(env.HOT_PATH_SECONDS)
+            const CHECK = 'check / lint, test, e2e, vulncheck'
+            const seconds = (from, to) => Math.floor((Date.parse(to) - Date.parse(from)) / 1000)
+
+            // 1. The org cap.
+            if (hotPathSeconds > 600) {
+              return core.setFailed(`hot path: hot-path-seconds is ${hotPathSeconds}, above the org cap of 600 s (TST-018)`)
+            }
+
+            // 2. The run attempt and its jobs.
+            const listJobs = (attemptNumber) => github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+              { owner, repo, run_id: context.runId, attempt_number: attemptNumber, per_page: 100 })
+            let startedAt, jobs
+            try {
+              startedAt = (await github.rest.actions.getWorkflowRunAttempt({ owner, repo, run_id: context.runId, attempt_number: attempt })).data.run_started_at
+              jobs = await listJobs(attempt)
+            } catch (error) {
+              return core.setFailed(`hot path: the run's jobs are not readable (${error.message}); the caller must grant actions: read`)
+            }
+            const elapsed = () => Math.floor((Date.now() - Date.parse(startedAt)) / 1000)
+            const kind = env.TEST_CACHE === 'cold' || env.IMAGE_CACHE === 'cold' ? 'cold' : 'warm'
+
+            // 3. The summary: a breach reads as "the pipeline grew" or as "the runners were busy". A job carried into
+            // a re-run keeps its old timestamps, so a negative queue time shows as a dash.
+            const rows = jobs.filter((job) => job.conclusion !== 'skipped').map((job) => {
+              const queued = job.created_at && job.started_at ? seconds(job.created_at, job.started_at) : -1
+              const ran = job.started_at && job.completed_at ? seconds(job.started_at, job.completed_at) : '-'
+              return `| ${job.name} | ${job.runner_name || '-'} | ${queued >= 0 ? queued : '-'} | ${ran} |`
+            })
+            const table = ['| Job | Runner | Queued s | Ran s |', '|-----|--------|---------:|------:|', ...rows,
+              `| **hot path** (${kind} caches, attempt ${attempt}) | | | **${elapsed()}** |`, ''].join('\n')
+            core.info(table)
+            await core.summary.addRaw(table, true).write()
+
+            // 4. A re-run attempt is complete only when every expected job ran in it: each need that was not skipped,
+            // one job per recipe and per browser shard, each started at or after the attempt's start.
+            if (attempt > 1) {
+              const shards = Number(env.BROWSER_SHARDS)
+              const names = {
+                lint: ['lint, vulncheck'],
+                test: ['unit tests'],
+                e2e: ['end-to-end tests'],
+                typescript: ['TypeScript tests'],
+                recipes: (env.RECIPES ? JSON.parse(env.RECIPES) : []).map((recipe) => `just ${recipe}`),
+                browser: shards > 1 ? Array.from({ length: shards }, (_, i) => `browser journeys ${i + 1}/${shards}`) : ['browser journeys'],
+                'image-build': ['build the image'],
+                image: ['build, attest and push the image'],
+              }
+              const expected = Object.entries(JSON.parse(env.NEEDS)).filter(([, need]) => need.result !== 'skipped').flatMap(([id]) => names[id])
+              const ranAgain = (name) => jobs.some((job) => job.name.endsWith(` / ${name}`) && job.started_at && Date.parse(job.started_at) >= Date.parse(startedAt))
+              const missing = expected.filter((name) => !ranAgain(name))
+              if (missing.length > 0) {
+                core.info(`Attempt ${attempt} did not run again: ${missing.join(', ')}.`)
+                const earlier = (await listJobs(attempt - 1)).find((job) => job.name.endsWith(CHECK))
+                const verdict = earlier?.steps?.find((step) => step.name === 'Hot path budget')?.conclusion
+                if (verdict === 'success') return core.info('hot path: earlier verdict stands')
+                if (verdict === 'failure') {
+                  return core.setFailed(`hot path: attempt ${attempt - 1} broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs`)
+                }
+                return core.setFailed('hot path: no verdict of a complete attempt; re-run all jobs')
+              }
+            }
+
+            // 5. The cap, independent of the budgets: a pull request must also leave room for the push, the cache
+            // save and the tags of the default branch. 6. The early warning of the run's kind, when set.
+            const cap = hotPathSeconds - (context.eventName === 'pull_request' ? 60 : 0)
+            const budget = Number(kind === 'cold' ? env.COLD_BUDGET : env.WARM_BUDGET)
+            const margin = Number(env.MARGIN_PERCENT)
+            const limit = Math.floor(budget * (100 + margin) / 100)
+            const failures = []
+            const took = elapsed() // the last sample: only the end of this job lies behind it
+            if (took > cap) failures.push(`hot path: ${took} s, over the cap of ${cap} s (TST-018)`)
+            if (budget > 0 && took > limit) failures.push(`budget: the pipeline took ${took} s, over its ${kind} budget of ${budget} s plus ${margin} %`)
+            const verdict = `Hot path ${took} s: cap ${cap} s` + (budget > 0 ? `, ${kind} budget ${budget} s, failing above ${limit} s (+${margin} %)` : '') + '.'
+            core.info(verdict)
+            await core.summary.addRaw(verdict, true).write()
+            if (failures.length > 0) core.setFailed(failures.join('\n'))
 
   budget:
     name: pipeline budget
     needs: [lint, test, e2e, typescript, recipes]
-    if: ${{ !cancelled() && !inputs.full && (inputs.budget-warm-seconds > 0 || inputs.budget-cold-seconds > 0) }}
+    if: ${{ !cancelled() && !inputs.full && (inputs.budget-warm-seconds > 0 || inputs.budget-cold-seconds > 0) && inputs.hot-path-seconds == 0 }}
     runs-on: ubuntu-latest
     steps:
       - name: Job times against the budget
@@ -403,7 +770,7 @@ jobs:
 
   badges:
     name: publish badges
-    needs: [lint, test, e2e, typescript, recipes]
+    needs: [lint, test, e2e, typescript, recipes, browser]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     concurrency:
@@ -435,10 +802,11 @@ jobs:
 
   image:
     name: build, attest and push the image
-    needs: [lint, test, e2e, typescript, recipes]
+    needs: [lint, test, e2e, typescript, recipes, browser, image-build]
     # Only pushes to the default branch and v* tags; skipped needs (no e2e, no recipes) do not block it.
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: *timeout
     # One run per ref at a time, the newest last: a slower run of an older main commit cannot re-point :main.
     # Tags get a group each (a shared group would drop a queued release); which moving tags a tag may move is
     # decided from the repository's tags, not from run order.
@@ -496,7 +864,9 @@ jobs:
             type=raw,value=latest,enable=${{ steps.newest.outputs.latest }}
             type=sha
 
+      # Without hot-path-seconds: build and push here, after the checks, with the layer cache.
       - id: build
+        if: needs.image-build.result == 'skipped'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -509,6 +879,36 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Hot path mode: tag the digest the image-build job pushed. Only the branch head moves the branch tag, so a
+      # re-run of an older run cannot point :main back (design S16); the sha- tag is always written. The output is
+      # the digest that tag resolves to, which the attestation signs.
+      - id: promote
+        name: tag the digest built beside the checks
+        if: needs.image-build.result == 'success'
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ needs.image-build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          REF_TYPE: ${{ github.ref_type }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          head=""
+          if [ "$REF_TYPE" = branch ]; then head=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1); fi
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            if [ "$REF_TYPE" = branch ] && [[ "${tag##*:}" != sha-* ]] && [ "$head" != "$GITHUB_SHA" ]; then
+              echo "$tag not moved: the branch head is ${head:-gone}, this run built $GITHUB_SHA"
+              continue
+            fi
+            args+=(--tag "$tag")
+          done <<<"$TAGS"
+          docker buildx imagetools create "${args[@]}" "$IMAGE@$DIGEST"
+          sha_tag=$(grep -m 1 ':sha-' <<<"$TAGS")
+          echo "digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$sha_tag")" >> "$GITHUB_OUTPUT"
+
       # Consumers verify the image came from this workflow:
       # gh attestation verify oci://<image>@<digest> --repo <owner>/<repo>
       # Private repositories get no attestation: GitHub stores them only for public repositories (and on
@@ -517,5 +917,5 @@ jobs:
         if: ${{ !github.event.repository.private }}
         with:
           subject-name: ${{ inputs.image }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.build.outputs.digest || steps.promote.outputs.digest }}
           push-to-registry: true
