@@ -53,6 +53,14 @@ have no budget. A re-run attempt prints the times but checks no budget: `run_sta
 the attempt, and "re-run failed jobs" runs only some jobs, so the elapsed time is not the pipeline's. The
 first attempt's verdict stands in its own run.
 
+The budget job is frozen as it is: a caller without `hot-path-seconds` keeps its job, span, runner and
+verdict. With `hot-path-seconds` the job does not run; the budgets and the cap are judged by the last step
+of `check` instead (S15). Its span runs from `run_started_at` to that step, so it covers the queue of
+`check` and, on a push, the tag job; the cap is `hot-path-seconds`, which the workflow refuses above the org
+limit of 600 s, minus 60 s on a pull request. A re-run there is judged anew when every expected job ran
+again, and repeats the verdict of the attempt before when only some did. `check` declares no permissions
+for the same reason as the budget job.
+
 ## S4 Extra recipes as a JSON matrix with FULL and BASE_REF
 
 `recipes` is a JSON array of justfile recipes, one job each, with its own cache and golangci-lint and
@@ -89,3 +97,93 @@ caller grants them too: a job's permissions cannot depend on the repository's vi
 `full: true` runs `just test-all` and `just test-e2e-all`, and the contract says both run every test
 uncached and shuffled (`-count=1 -shuffle=on`, TST-005). The workflow adds no flag: v1 recipes take no
 arguments, and a flag injected by CI (`GOFLAGS`) would make CI and a local `just test-e2e-all` differ.
+
+## S9 The image is built beside the checks and tagged after them
+
+With `hot-path-seconds` the job `build the image` starts with the checks, on pull requests too. A pull
+request exports every platform to an OCI tarball and pushes nothing, so compile and compression are inside
+its measurement and a broken Dockerfile fails it. A push pushes the image by digest, without a tag; the job
+`build, attest and push the image` tags that digest (`docker buildx imagetools create`) once every check
+passed, and attests the digest the `sha-` tag resolves to. A deploy follows tags, so nothing deploys an
+image whose checks failed, and the pipeline takes the longer of checks and build instead of their sum
+(measured on the first service: checks 135 to 160 s, then the image job 428 to 545 s). Without
+`hot-path-seconds` the image job builds and pushes as before. The untagged versions of failed runs stay in
+the registry; they are harmless for deploys.
+
+## S10 The compile cache travels as a cache mount, not as layers
+
+The image job's `type=gha` layer cache did not pay: on the first service the repository's cache quota was
+over-committed (10.5 GB of 10 GB), the blobs were evicted, every run missed (`go mod download`, 38 to 41 s,
+never `CACHED`) and then spent 111 to 183 s exporting the layers again, while the two cold Go compiles took
+190 to 245 s. In hot path mode there is no layer cache. The Go compile cache is carried instead: an
+`actions/cache` entry (`sandbox/image-mounts`, keyed on the Dockerfile) that two small `docker buildx
+build` calls copy into the builder's cache mount `/root/.cache/go-build` before the build and out of it
+afterwards. Cache mounts are keyed by their target inside a builder, so the service's build finds the
+files. The transfer builds take a stamp of run id and attempt as a build argument, never `--no-cache`,
+which empties cache mounts. The busybox they run is pinned by digest and pulled from Amazon's mirror of the
+Docker library, which has no Docker Hub pull limit. The save rule is the Go caches' (S2); an extraction
+that finds no file warns and saves nothing, so a Dockerfile without the mount builds as before, uncached.
+`go mod download` and the frontend build run every time, in parallel stages, beside the checks.
+
+## S11 A browser job with shards, selection in the recipe
+
+`browser` names the justfile recipe of the browser journeys; `browser-shards` (1 to 8) runs it in one job
+per shard with `SHARD=<n>/<shards>`. Expressions have no arithmetic, so the shard list is a lookup by
+count; a count outside the range yields no matrix and fails the run, so no shard can be left out. Which
+journeys a change needs is the recipe's decision (`BASE_SHA`), so CI and a local run select the same; the
+job checks out the full history, carries Chromium's download keyed on `bun.lock` and uploads the
+Playwright report of a failed shard. The recipe installs the browser.
+
+## S12 Green-run records for every job
+
+With `hot-path-seconds` the lint, recipe and browser jobs restore and save `sandbox/*-passed`, the records
+a recipe writes after a green run (TST-015), under `passed-<job>-<sha>-<run id>-<attempt>`: one key per job
+and shard, so no two jobs of a run write one key, and run id and attempt keep a scheduled run or a re-run on
+a commit that already saved from failing to save. Full runs restore them too: the recipes ignore records
+when `FULL=true`, and a green full run writes them. Without `hot-path-seconds` these jobs carry no records: a
+caller's recipe that happens to write `sandbox/*-passed` then runs in CI exactly as before. The e2e job
+keeps its own records (`e2e-passed-`).
+
+## S13 The nightly alert is its own workflow
+
+`nightly-alert.yml` is called by a second job of the caller's `ci.yml`, not run inside `go-service.yml` or
+`go-library.yml`: a called job that declares `issues: write` fails every v1 caller that does not grant it
+at startup (S3), and one workflow serves both and a caller with jobs of its own. The issue of a workflow on
+a ref is the open issue labelled `nightly-ci` whose body carries `<!-- nightly-alert <workflow ref> -->`
+(workflow file and full ref), so two workflows, or a branch and a tag of one name, never share one, and a
+probe on a branch never touches the default branch's issue. The body records the newest red run and, when
+closed, the green run that closed it (`<run number>.<attempt>`): an older green run that finishes late
+leaves the issue open, a late old red run does not open one that a newer green run closed, and a re-run of
+the red run closes it. The job has one concurrency group per workflow ref and checks every login with the
+assignability endpoint before it changes anything; it fails on every run while no login can be assigned or
+the open issue has no assignee, and the next red run adds the assignees an issue lacks.
+
+## S14 Timeouts are not an input
+
+Every job that runs the repository's code times out after 10 minutes on a hot path run, after 60 on any
+other run of a caller with `hot-path-seconds`, and keeps GitHub's 360 without it; `check` after 5. The
+failure mode they guard against is a suite whose timeout was raised step by step until the pipeline took an
+hour, so no input, `full` included, changes them. They end a hung job and are no run deadline: one that
+cancels the run at the cap would turn the same pipeline red a little earlier and tell nothing more, while the
+verdict already blocks the merge. The YAML anchor of the first job carries the expression to the others.
+
+## S15 The required check judges the hot path
+
+The cap is a step of `check`, the one check branch protection requires, not a job of its own: a pull
+request over the cap cannot merge without a new required check, and no job can be skipped around it. The
+step reads the run attempt and its jobs from the API, writes a table of runner, queue and run seconds per
+job, and samples the elapsed time once more as its last statement before the verdict, so only the end of
+the job lies behind the span. A re-run attempt is complete only when every expected job (each need that was
+not skipped, one per recipe and per shard) started at or after the attempt's start; a partial attempt
+repeats the verdict of the step in the attempt before, and fails without one. `check` also fails when a job
+that `browser` or `hot-path-seconds` enables was skipped, so a cancelled run cannot pass without its image.
+In hot path mode `check` runs on the checks' runner kind, written without `gh` or `jq`.
+
+## S16 Only the branch head moves the branch tag
+
+The caller's concurrency group serializes the pushes of a branch and the image job keeps its own group, but
+neither stops a re-run of an older run's image job from pointing `:main` back. The tag step therefore asks
+the remote for the branch head (`git ls-remote`) and writes the branch tag only when the head is the run's
+commit; the `sha-` tag is always written. That is right for a rollback (the head is the older commit, its
+run moves the tag) and for diverged history (an old run is not the head). The price: a commit superseded
+before its tag job runs never carries `:main`; the head that follows it does, when it is green.
