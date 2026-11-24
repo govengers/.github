@@ -12,6 +12,9 @@
 #   just test-typescript   only with bun-version: TypeScript type checks and bun tests of the library's
 #                      TypeScript sources; Bun is on the PATH for every recipe, so test-e2e may drive it too
 #   with full: true    just test-all and just test-e2e-all instead: everything, uncached (the nightly run)
+#
+# With budget-seconds (standards TST-018) a run that is not full fails when the check job's own steps took longer;
+# the check job then times out after 60 minutes instead of GitHub's default of 360.
 name: Go library
 
 on:
@@ -37,6 +40,10 @@ on:
         description: Bun release to install before the tests; when set, `just test-typescript` runs after the unit tests. Empty (the default) installs no Bun and runs no TypeScript recipe
         type: string
         default: ""
+      budget-seconds:
+        description: budget in seconds for the check job's steps on a run that is not full (TST-018); 0 (the default) sets none
+        type: number
+        default: 0
 
 # Runner: the jobs that run the repository's code take the runs-on label in the caller's CI_RUNNER variable
 # (org or repo; the govengers org sets the fuji self-hosted runners), ubuntu-latest when it is unset. A pull
@@ -49,9 +56,14 @@ jobs:
   check:
     name: lint, test, e2e, vulncheck
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    # The bound of a full run; a run that is not full is bounded by the budget step.
+    timeout-minutes: ${{ inputs.budget-seconds > 0 && 60 || 360 }}
     permissions:
       contents: read
     steps:
+      - name: Start the budget clock
+        run: echo "BUDGET_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
 
       - name: Go minor version from go.mod
@@ -191,6 +203,21 @@ jobs:
             sandbox/badges/e2e-tests.json
           if-no-files-found: warn
           retention-days: 7
+
+      # The job's own clock, no API call and no new permission; queue time is not counted, a library gates no
+      # deployment.
+      - name: Budget
+        if: ${{ !cancelled() && !inputs.full && inputs.budget-seconds > 0 }}
+        shell: bash
+        env:
+          BUDGET: ${{ inputs.budget-seconds }}
+        run: |
+          took=$(($(date +%s) - BUDGET_START))
+          echo "The checks took $took s of a budget of $BUDGET s." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$took" -gt "$BUDGET" ]; then
+            echo "budget: the checks took $took s, over the budget of $BUDGET s (TST-018)" >&2
+            exit 1
+          fi
 
   badges:
     name: publish badges
