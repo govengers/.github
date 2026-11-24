@@ -497,7 +497,10 @@ Details, in the order of the file:
      push to the default branch or a `v*` tag. The step gets three expressions as environment
      (`EXPECT_BROWSER`, `EXPECT_IMAGE_BUILD`, `EXPECT_IMAGE`) and fails with the job's name when
      one is true and the result is not `success`.
-   - Step `Hot path budget`, `if: ${{ always() && (HOT) }}`, one `actions/github-script@v9` step
+   - Step `Hot path budget`, `if: ${{ !cancelled() && (HOT) }}` (not `always()`: a cancelled
+     attempt stopped its jobs early, so its time is no verdict a partial re-run may repeat, and
+     `check` fails it through the first step anyway; V4 (c) expects exactly that), one
+     `actions/github-script@v9` step
      (no `gh`, no `jq`: the self-hosted image is not assumed to have them), in this order:
      1. `hot-path-seconds` above 600: fail with `hot path: hot-path-seconds is <n>, above the org
         cap of 600 s (TST-018)`.
@@ -530,7 +533,9 @@ Details, in the order of the file:
    reports after the image job on a push to the default branch or a tag, with the same result as
    today (pull requests: no difference); `check` no longer declares empty permissions. Nothing
    else: image, budget, the record cache of the end-to-end job, job names and every other step
-   are today's, and the new record steps do not run.
+   are today's, and the new record steps do not run. The two new jobs show in the run as skipped
+   checks (`browser journeys`, `build the image`), as `end-to-end tests` or `TypeScript tests` do
+   when their input is off; branch protection is not affected, since it requires only `check`.
 9. **Header comment** of the file: the hot path mode, the three inputs, `BASE_SHA`, `SHARD`.
 
 #### `.github/workflows/go-library.yml` (changed)

@@ -175,7 +175,8 @@ step reads the run attempt and its jobs from the API, writes a table of runner, 
 job, and samples the elapsed time once more as its last statement before the verdict, so only the end of
 the job lies behind the span. A re-run attempt is complete only when every expected job (each need that was
 not skipped, one per recipe and per shard) started at or after the attempt's start; a partial attempt
-repeats the verdict of the step in the attempt before, and fails without one. `check` also fails when a job
+repeats the verdict of the step in the attempt before, and fails without one. A cancelled run gets no
+verdict (the step is skipped): its jobs stopped early, so its time is not the pipeline's. `check` also fails when a job
 that `browser` or `hot-path-seconds` enables was skipped, so a cancelled run cannot pass without its image.
 In hot path mode `check` runs on the checks' runner kind, written without `gh` or `jq`.
 

@@ -617,9 +617,10 @@ jobs:
       # The hot path cap (TST-018), judged inside the required check, so a pull request over it cannot merge. The
       # span runs from the run's start to the verdict below: every queue, the image job's turn and this job's own
       # runner count. A re-run attempt is judged anew only when every expected job ran again; otherwise the verdict
-      # of the attempt before stands (design S15).
+      # of the attempt before stands (design S15). A cancelled run gets no verdict: its time is not the pipeline's,
+      # and check fails it anyway.
       - name: Hot path budget
-        if: ${{ always() && (inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))) }}
+        if: ${{ !cancelled() && (inputs.hot-path-seconds > 0 && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))) }}
         uses: actions/github-script@v9
         env:
           HOT_PATH_SECONDS: ${{ inputs.hot-path-seconds }}
