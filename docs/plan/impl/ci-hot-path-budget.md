@@ -223,7 +223,10 @@ the commit before the push) and the recipe compares it directly with the checkou
 the branch backwards. Locally there is no `BASE_SHA`: the merge base of `HEAD` with
 `origin/${BASE_REF:-main}` against the working tree, plus `git ls-files --others
 --exclude-standard`. `--no-renames` lists the old and the new path of a rename. A base that is not
-a commit in the clone (a first push, zeros, a shallow clone): every journey.
+a commit in the clone (a first push, zeros, a `BASE_REF` without a remote ref): every journey. A
+shallow clone selects every journey, with and without `BASE_SHA`. A changed path below
+`browser_specs` that is not an existing spec (a helper, a deleted spec) is no spec for rule 2 and
+falls to rule 4: every journey.
 
 **Claims.** A spec names the paths whose journeys it holds in one comment line, repository
 relative, space separated; a path may be claimed by several specs:
@@ -247,13 +250,14 @@ it is safe.
    it, as the order recommends) and prose. It is explicit and short; holo's is in WP3.
 4. Else: every journey. This is the default for every path nobody classified: shared components,
    the generated API client, the lockfile, the Playwright configuration, the justfile, a page no
-   spec claims, a new top-level directory.
+   spec claims, a new top-level directory, a file below `browser_specs` that is no existing spec.
 5. The result is `all`, or the pattern `@smoke|<spec>\.spec\.ts|...`, each spec once. Playwright
    matches `--grep` against the file name, the titles and the tags of a test (verified with
    1.65.1: `--grep "session\.spec\.ts|@smoke"` lists the four journeys of that spec and every
    smoke journey), so one invocation runs the selection.
-6. A claimed path that does not exist fails `browser-select` with the spec and the path: a typo or
-   a deleted page is fixed in the claim, not silently unmapped.
+6. A claimed path that does not exist fails `browser-select` with the spec and the path, on every
+   call: also with `FULL=true` and with paths as arguments. A typo or a deleted page is fixed in
+   the claim, not silently unmapped.
 
 ```mermaid
 flowchart TD
@@ -290,7 +294,7 @@ not ignore, and that is not below `browser_unaffected` (path and content), the B
 selection and `SHARD`. So `browser_unaffected` may hold only Go code and embedded files (the
 binaries fingerprint them) and files no journey process reads. A record is read and written only
 by a run without extra flags: `just ui-e2e --list` or a narrowed run proves nothing. A record
-satisfies exactly its own selection and shard. CI now carries the records and Chromium's download
+(`sandbox/ui-e2e-passed/<key>`, one empty file) satisfies exactly its own selection and shard. CI now carries the records and Chromium's download
 between runs.
 
 ## 7. Architecture
@@ -651,7 +655,9 @@ No project name in any rule or template; the reference numbers speak of "the fir
   workflow `hot-path-seconds` unset or above 600, or the warm and cold budgets unset; with the
   library workflow `budget-seconds` unset. Body: the definitions and the two tables of section 4,
   the cap and the early warning, 60 minutes for the full run, the generic failure mode of section
-  1, the reference table (updated in WP4).
+  1, the reference table: it keeps the measured rows from before the hot path and the laptop rows,
+  adds the 56 s row of all journeys in CI and three pending rows (warm pull request, cold pull
+  request, push to main; filled in WP4), and drops the 119 s row.
 - **TST-020, rewritten in place.** Heading `### TST-020 Browser journeys run in parallel on their
   own state; a change runs the journeys it needs, the scheduled run all of them`. Severity
   `should`. Check: a Playwright run with one worker, without full parallelism, or with a serial
@@ -669,11 +675,14 @@ No project name in any rule or template; the reference numbers speak of "the fir
   whoever last edited the workflow; an issue a later green run leaves open; a full run and the
   pushes of a branch in one concurrency group. Body: what leaves the hot path is checked nowhere else, so a
   silent red nightly is an unchecked rule; where it bit: a journey of the full set was red for six
-  nights and nobody was told.
+  nights and nobody was told. No YAML snippet: the rule points to the README of `govengers/.github`
+  ("Nightly alert"), since a `@v1` snippet would not work until `v1` moves.
 - **TST-014**: the paragraph on the scheduled run names `workflow_dispatch`, the vulnerability
   scan and TST-021; the check gains "a scheduled run nobody is told about (TST-021)".
-- **TST-015**: one sentence: a skip record says "nothing changed", the selection of TST-020 says
-  "which part changed"; the journeys use both, and the record's key includes the selection.
+- **TST-015**: its last paragraph: a skip record says "nothing changed", the selection of TST-020
+  says "which part changed"; the journeys use both, and it states the record's key of section 6
+  (the binaries the journeys execute, every file not below `browser_unaffected`, the Bun version,
+  the selection and `SHARD`).
 
 #### `rules/core/toolchain.md` (changed)
 
@@ -708,23 +717,33 @@ No project name in any rule or template; the reference numbers speak of "the fir
   - `browser-select *paths`: section 6. With arguments it judges those paths instead of asking
     git (the form the tests use). Prints `all` or the pattern. Paths are read line by line, so a
     path with a space is one path.
-  - `ui-e2e *flags`: builds the frontend, then `browser_binaries` (reproducibly, as `e2e-build`
-    does, into `sandbox/ui-e2e/`), computes the key, installs the browser when `CI` is set (`bunx playwright install --with-deps
-    --only-shell chromium`), skips on a record (section 6; no record with flags), else `bunx
-    playwright test --fully-parallel --workers={{browser_workers}}
-    --global-timeout={{browser_budget_ms}}` (600000 with `FULL=true`) with `--grep "<pattern>"`
-    unless `all`, `--shard=$SHARD` when set, `{{flags}}`; writes the record.
+  - `ui-build: ui-install` (new): `cd ui && bun run build`. `test-typescript: ui-install &&
+    ui-build`.
+  - `ui-e2e *flags: ui-build`: builds `browser_binaries` with `-trimpath -buildvcs=false -ldflags
+    "-X main.version=e2e"` into `sandbox/ui-e2e/`, computes the key, skips on a record (section
+    6; no record with flags), then installs the browser when `CI` is set (`bunx playwright install
+    --with-deps --only-shell chromium`; a skipped run runs no apt), else runs `bunx playwright
+    test --fully-parallel --workers={{browser_workers}} --global-timeout={{browser_budget_ms}}`
+    (600000 with `FULL=true`) with `--grep "<pattern>"` unless `all`, `--shard=$SHARD` when set,
+    `{{flags}}`, with an absolute `E2E_SERVER` and the launcher run from
+    `sandbox/ui-e2e/postgrestest`; writes the record `sandbox/ui-e2e-passed/<key>`, one empty
+    file.
   - `ui-e2e-all *flags`: `FULL=true` and `ui-e2e`.
   - `check` gains `ui-e2e`.
 - `templates/service/docker/server.Dockerfile`: the comment on the compile cache mount ("in CI it
-  starts empty") becomes "CI carries it between runs (go-service.yml)". No instruction changes.
+  starts empty") becomes "CI carries it between runs (go-service.yml)", and the comment on the
+  dependency layer becomes "A layer, not a cache mount: it serves local builds, Docker's layer
+  cache keeps it between them." No instruction changes.
 - `templates/README.md`: the `justfile` row and the bullets of "How the test scoping works"
   (journeys selected, records for vulncheck), and a paragraph "What `ui-e2e` expects of the
   frontend", the harness contract: `@playwright/test` pinned in `ui/package.json`; a
   `ui/playwright.config.ts` with `testDir: 'e2e'` and a `globalSetup` that starts the binary in
   `E2E_SERVER` on a scratch database and exports the base URL; specs in `ui/e2e/*.spec.ts`, each
   with a `// covers:` line, smoke journeys tagged `@smoke`; every journey on its own state; no
-  serial block and no worker limit in the configuration. The
+  serial block and no worker limit in the configuration; what a run writes (`node_modules`, build
+  output, `playwright-report`, `test-results`) is ignored by git, or it changes the next run's key;
+  a further Go program the global setup runs goes into `browser_binaries`, and the recipe passes
+  its path in `sandbox/ui-e2e/` as it passes `E2E_SERVER`. The
   template ships no frontend, as for `test-typescript`: the first service is the worked example,
   and it runs this recipe text (T3, T4). The lines on `ci.yml` wait for WP5.
 - `README.md`: the `TST` row of the index names the hot path, the selected journeys and the
@@ -874,11 +893,11 @@ Tests written with the code:
 
 | Id | Where | Cases |
 |----|-------|-------|
-| T1 | standards `templates.yml`, the miniature repository | no path: `@smoke`; `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `ui/e2e/tasks.spec.ts`: `@smoke\|tasks\.spec\.ts`; `ui/src/pages/Users/Users.test.ts`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md` (claimed Markdown): `@smoke\|tasks\.spec\.ts`; `docs/notes.md`: `@smoke`; `ui/src/ui/Button/Button.vue`: `all`; `ui/bun.lock`: `all`; `justfile`: `all`; `assets/logo.svg` (nobody classified it): `all`; `ui/src/pages/Task/Task.vue` (two specs would claim it in holo, one here) with `ui/src/pages/Users/Users.vue`: both specs, each once; `FULL=true`: `all` (every other case sets `FULL=false`, so the step also passes where `FULL` is set); with the broken spec copied in: exit 1 naming spec and path |
+| T1 | standards `templates.yml`, the miniature repository | no path: `@smoke`; `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `ui/e2e/tasks.spec.ts`: `@smoke\|tasks\.spec\.ts`; `ui/src/pages/Users/Users.test.ts`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md` (claimed Markdown): `@smoke\|tasks\.spec\.ts`; `docs/notes.md`: `@smoke`; `ui/src/ui/Button/Button.vue`: `all`; `ui/bun.lock`: `all`; `justfile`: `all`; `assets/logo.svg` (nobody classified it): `all`; `ui/src/pages/Task/Task.vue` (two specs would claim it in holo, one here) with `ui/src/pages/Users/Users.vue`: both specs, each once; `FULL=true`: `all` (every other case sets `FULL=false`, so the step also passes where `FULL` is set); with the broken spec copied in: exit 1 naming spec and path; `ui/e2e/helpers.ts` (below the specs, no spec): `all`; `ui/src/pages/Board/Board.vue`, `ui/src/pages/Task/Task.vue` and `ui/e2e/tasks.spec.ts` together: `@smoke\|tasks\.spec\.ts`, the spec once; a path with spaces is kept as one path |
 | T2 | holo `browser-select-check`, foundation only | `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md`: `@smoke\|operations\.spec\.ts`; `ui/src/ui/Button/Button.vue`: `all`; `justfile`: `all`; and `bunx playwright test --list --grep "<pattern of the Users case>"` lists more journeys than `--grep @smoke` and fewer than no pattern; the partial cases with `FULL=false`, one case with `FULL=true` expecting `all`. `just check` and `FULL=true just derive-check` both pass with it: a full run and the derived application, which has no domain specs, run the same check |
 | T3 | holo `ui-e2e`, run by hand and noted in the pull request | from a fresh clone: the second run without a change prints the skip; a change of `hack/scratchdb` or a bump of the launcher's version in `go.mod` runs again; a change of one page file runs that spec; a new untracked file below `ui/src/ui` runs every journey and is not skipped by the earlier record; `just ui-e2e --list` writes no record; `FULL=true` ignores the record |
 | T4 | holo journeys | `FULL=true just ui-e2e --repeat-each=5 --workers=4` green three times in a row, and `SHARD=1/2` plus `SHARD=2/2` green: no journey depends on another |
-| T5 | standards `templates.yml`, a temporary git history of the miniature repository | `BASE_SHA` of the base commit, a page file changed on the branch: that spec; `BASE_SHA` of a commit ahead of the checkout (the branch moved back) with a shared file differing: `all`; `BASE_SHA` of zeros, and of a commit not in the clone: `all`; a page file renamed out of a claimed directory: the spec of the old path; no `BASE_SHA`, a branch off the base with one committed and one untracked page file: both specs (merge base, untracked included) |
+| T5 | standards `templates.yml`, a temporary git history of the miniature repository | `BASE_SHA` of the base commit, a page file changed on the branch: that spec; `BASE_SHA` of a commit ahead of the checkout (the branch moved back) with a shared file differing: `all`; `BASE_SHA` of zeros, and of a commit not in the clone: `all`; a page file renamed out of a claimed directory: the spec of the old path; no `BASE_SHA`, a branch off the base with one committed and one untracked page file, the untracked one with a space in its name: both specs (merge base, untracked included); a `BASE_REF` without a remote ref: `all`; a shallow clone: `all` |
 
 Gates: `actionlint` in `govengers/.github` and in the standards (`templates.yml` also runs
 hadolint and parses both justfiles); `just check` in holo; no `must` finding of a review with the
