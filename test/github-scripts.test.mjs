@@ -69,7 +69,9 @@ function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, env 
 
 const allJobs = (start) => ['lint, vulncheck', 'unit tests', 'end-to-end tests', 'just db-check', 'browser journeys 1/2', 'browser journeys 2/2', 'build the image']
   .map((name) => job(name, start + 5))
-const checkJob = (start, conclusion) => job('check / lint, test, e2e, vulncheck', start, { steps: conclusion ? [{ name: 'Hot path budget', conclusion }] : [] })
+const checkJob = (start, verdict, results = 'success') => job('check / lint, test, e2e, vulncheck', start, {
+  steps: [{ name: 'Every job passed or was skipped by its input', conclusion: results }, ...(verdict ? [{ name: 'Hot path budget', conclusion: verdict }] : [])],
+})
 
 test('hot path: a value above 600 fails with the org cap', async () => {
   const log = await checkRun({ attempts: { 1: { started: 0, readable: true, jobs: allJobs(0) } }, now: 100, env: { HOT_PATH_SECONDS: '900' } })
@@ -120,17 +122,21 @@ test('hot path: a partial re-run repeats the verdict of the attempt before', asy
   // Browser shard 2/2 carried over with its old timestamps; on the next attempt shard 1/2 is missing.
   const carried = allJobs(1000).map((j) => (j.name.endsWith('2/2') ? job('browser journeys 2/2', 5) : j))
   const missing = allJobs(1000).filter((j) => !j.name.endsWith('1/2'))
-  for (const [jobs, verdict, expected] of [
-    [carried, 'success', []],
-    [missing, 'success', []],
-    [carried, 'failure', ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
-    [carried, 'skipped', ['hot path: no verdict of a complete attempt; re-run all jobs']],
-    [carried, 'cancelled', ['hot path: no verdict of a complete attempt; re-run all jobs']],
-    [carried, undefined, ['hot path: no verdict of a complete attempt; re-run all jobs']],
+  const failedJobs = 'hot path: attempt 1 had failed jobs, so its time is no measurement; re-run all jobs'
+  for (const [jobs, verdict, results, expected] of [
+    [carried, 'success', 'success', []],
+    [missing, 'success', 'success', []],
+    [carried, 'success', 'failure', [failedJobs]],
+    [missing, 'success', 'failure', [failedJobs]],
+    [carried, 'failure', 'success', ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'failure', 'failure', ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'skipped', 'failure', ['hot path: no verdict of a complete attempt; re-run all jobs']],
+    [carried, 'cancelled', 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
+    [carried, undefined, 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
   ]) {
-    const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), checkJob(400, verdict)] }, 2: { started: 1000, readable: true, jobs } }
+    const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), checkJob(400, verdict, results)] }, 2: { started: 1000, readable: true, jobs } }
     const log = await checkRun({ attempts, now: 1100 })
-    assert.deepEqual(log.failed, expected, `earlier verdict ${verdict}`)
+    assert.deepEqual(log.failed, expected, `earlier verdict ${verdict}, results ${results}`)
     if (expected.length === 0) assert.ok(log.info.includes('hot path: earlier verdict stands'))
   }
 })

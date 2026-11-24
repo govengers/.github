@@ -698,13 +698,19 @@ jobs:
               const missing = expected.filter((name) => !ranAgain(name))
               if (missing.length > 0) {
                 core.info(`Attempt ${attempt} did not run again: ${missing.join(', ')}.`)
+                // A verdict counts only when every job of that attempt passed: a job that failed early shortened
+                // the pipeline it measured.
                 const earlier = (await listJobs(attempt - 1)).find((job) => job.name.endsWith(CHECK))
-                const verdict = earlier?.steps?.find((step) => step.name === 'Hot path budget')?.conclusion
-                if (verdict === 'success') return core.info('hot path: earlier verdict stands')
+                const conclusion = (name) => earlier?.steps?.find((step) => step.name === name)?.conclusion
+                const verdict = conclusion('Hot path budget')
                 if (verdict === 'failure') {
                   return core.setFailed(`hot path: attempt ${attempt - 1} broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs`)
                 }
-                return core.setFailed('hot path: no verdict of a complete attempt; re-run all jobs')
+                if (verdict !== 'success') return core.setFailed('hot path: no verdict of a complete attempt; re-run all jobs')
+                if (conclusion('Every job passed or was skipped by its input') !== 'success') {
+                  return core.setFailed(`hot path: attempt ${attempt - 1} had failed jobs, so its time is no measurement; re-run all jobs`)
+                }
+                return core.info('hot path: earlier verdict stands')
               }
             }
 

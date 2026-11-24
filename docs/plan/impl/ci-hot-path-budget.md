@@ -522,11 +522,15 @@ Details, in the order of the file:
         follow from the inputs and the needs: each need whose result is not `skipped`, one job
         per entry of `inputs.recipes`, one per shard of `inputs.browser-shards`. Each must be in
         the attempt's list with a `started_at` at or after the attempt's `run_started_at`. One
-        missing, or older (it did not run again): the attempt is partial; read the step `Hot path
-        budget` of the `check` job of the previous attempt. It succeeded: pass, `earlier verdict stands`. It
-        failed: fail with `hot path: attempt <n-1> broke the budget and this re-run did not repeat
-        every job; make the pipeline faster or re-run all jobs`. No such step, or it was skipped or
-        cancelled: fail with `hot path: no verdict of a complete attempt; re-run all jobs`. An
+        missing, or older (it did not run again): the attempt is partial; read the steps `Hot path
+        budget` and `Every job passed or was skipped by its input` of the `check` job of the
+        previous attempt. The budget step failed: fail with `hot path: attempt <n-1> broke the
+        budget and this re-run did not repeat every job; make the pipeline faster or re-run all
+        jobs`. No such step, or it was skipped or cancelled: fail with `hot path: no verdict of a
+        complete attempt; re-run all jobs`. It succeeded, but the results step did not (a job
+        failed early and shortened the pipeline it measured): fail with `hot path: attempt <n-1>
+        had failed jobs, so its time is no measurement; re-run all jobs`. Both succeeded: pass,
+        `earlier verdict stands` (a re-run of single jobs of a green run, e.g. the tag job). An
         attempt in which every job ran again is judged like a first attempt.
      5. The cap, independent of the two budgets below: `cap` = `hot-path-seconds`, minus 60 on a
         pull request. `elapsed` above `cap`: fail with `hot path: <elapsed> s, over the cap of

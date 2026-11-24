@@ -58,7 +58,7 @@ verdict. With `hot-path-seconds` the job does not run; the budgets and the cap a
 of `check` instead (S15). Its span runs from `run_started_at` to that step, so it covers the queue of
 `check` and, on a push, the tag job; the cap is `hot-path-seconds`, which the workflow refuses above the org
 limit of 600 s, minus 60 s on a pull request. A re-run there is judged anew when every expected job ran
-again, and repeats the verdict of the attempt before when only some did. `check` declares no permissions
+again, and repeats the verdict of the attempt before when only some did and that attempt was green. `check` declares no permissions
 for the same reason as the budget job.
 
 ## S4 Extra recipes as a JSON matrix with FULL and BASE_REF
@@ -175,8 +175,9 @@ step reads the run attempt and its jobs from the API, writes a table of runner, 
 job, and samples the elapsed time once more as its last statement before the verdict, so only the end of
 the job lies behind the span. A re-run attempt is complete only when every expected job (each need that was
 not skipped, one per recipe and per shard) started at or after the attempt's start; a partial attempt
-repeats the verdict of the step in the attempt before, and fails without one. A cancelled run gets no
-verdict (the step is skipped): its jobs stopped early, so its time is not the pipeline's. `check` also fails when a job
+repeats the verdict of the step in the attempt before only when that attempt's results step passed too,
+and fails otherwise: a job that failed early, or a cancelled run, shortened the pipeline the earlier step
+measured. A cancelled run gets no verdict at all (the step is skipped). `check` also fails when a job
 that `browser` or `hot-path-seconds` enables was skipped, so a cancelled run cannot pass without its image.
 In hot path mode `check` runs on the checks' runner kind, written without `gh` or `jq`.
 
