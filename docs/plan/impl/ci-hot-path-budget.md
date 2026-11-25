@@ -77,8 +77,8 @@ by a push to the default branch. Nothing else decides it: a caller that passes `
 an event still gets the cap and the short timeouts. Scheduled runs, dispatched runs and `v*` tags
 are full runs, outside the cap.
 
-**Span.** From `run_started_at`, as the API reports it, to the clock of the required check
-`check` itself: its last step judges the budget. `check` needs every check and, on the default
+**Span.** From `run_started_at`, as the API reports it, to the clock of the one check a merge
+waits for, `check` itself: its last step judges the budget. `check` needs every check and, on the default
 branch, the job that tags the pushed image, so the span ends with the check result on a pull
 request and with the pushed image plus the verdict on the default branch. Every wait counts: for
 runners, for the image job's turn, for `check`'s own runner. In hot path mode `check` runs on the
@@ -703,9 +703,9 @@ No project name in any rule or template; the reference numbers speak of "the fir
 - **TST-018, rewritten in place.** Heading `### TST-018 The hot path stays under ten minutes, and
   CI fails over it`. Severity `must` (the owner states it as a hard rule; a `must` is what the org
   declared non-negotiable). Principle P8. Check: a pipeline that gates a deployment without a cap
-  from the run's start to the pushed image (pull request: to the required check), or with a cap
-  above 600 s; a cap that only prints, or that is not judged inside the check branch protection
-  requires; a job
+  from the run's start to the pushed image (pull request: to the check a merge waits for), or with
+  a cap above 600 s; a cap that only prints, or that is not judged inside the one check a merge
+  waits for (required by branch protection where the repository can require checks); a job
   timeout raised to make room instead of the suite made faster, split or moved to the scheduled
   run; a pull request pipeline that does not build the image the default branch pushes; a
   scheduled run that does not run what the hot path leaves out; with the govengers service
