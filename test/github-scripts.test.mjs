@@ -96,14 +96,20 @@ test('hot path: a pull request is capped 60 s below a push', async () => {
   assert.deepEqual((await checkRun({ attempts, now: 601, event: 'push' })).failed, ['hot path: 601 s, over the cap of 600 s (TST-018)'])
 })
 
-test('hot path: the early warning takes the budget of the run kind, and the cap holds without budgets', async () => {
+test('hot path: the early warning of the run kind warns and never fails; the cap fails', async () => {
   const attempts = { 1: { started: 0, readable: true, jobs: allJobs(0) } }
   const budgets = { WARM_BUDGET: '300', COLD_BUDGET: '480' }
-  assert.deepEqual((await checkRun({ attempts, now: 360, env: budgets })).failed, [])
-  assert.deepEqual((await checkRun({ attempts, now: 361, env: budgets })).failed, ['budget: the pipeline took 361 s, over its warm budget of 300 s plus 20 %'])
-  assert.deepEqual((await checkRun({ attempts, now: 361, env: { ...budgets, IMAGE_CACHE: 'cold' } })).failed, [])
+  const within = await checkRun({ attempts, now: 360, env: budgets })
+  assert.deepEqual([within.failed, within.warnings], [[], []])
+  const over = await checkRun({ attempts, now: 361, env: budgets })
+  assert.deepEqual(over.failed, [])
+  assert.deepEqual(over.warnings, ['budget: the pipeline took 361 s, over its warm budget of 300 s plus 20 %; a warning, the cap of 540 s is the limit'])
+  assert.match(over.summary, /warm budget 300 s, warning above 360 s \(\+20 %\): over it, a warning\./)
+  const cold = await checkRun({ attempts, now: 361, env: { ...budgets, IMAGE_CACHE: 'cold' } })
+  assert.deepEqual([cold.failed, cold.warnings], [[], []])
   const both = await checkRun({ attempts, now: 590, env: { ...budgets, TEST_CACHE: 'cold' } })
-  assert.deepEqual(both.failed, ['hot path: 590 s, over the cap of 540 s (TST-018)\nbudget: the pipeline took 590 s, over its cold budget of 480 s plus 20 %'])
+  assert.deepEqual(both.failed, ['hot path: 590 s, over the cap of 540 s (TST-018)'])
+  assert.deepEqual(both.warnings, ['budget: the pipeline took 590 s, over its cold budget of 480 s plus 20 %; a warning, the cap of 540 s is the limit'])
 })
 
 test('hot path: the summary lists runner, queue and run seconds, a dash for a carried job', async () => {

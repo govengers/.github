@@ -62,15 +62,15 @@ on:
         type: string
         default: ""
       budget-warm-seconds:
-        description: pipeline budget in seconds when the test job restored a cache of the same Go release and go.sum; 0 (the default) sets none
+        description: pipeline budget in seconds when the test job restored a cache of the same Go release and go.sum; without hot-path-seconds the pipeline budget job fails over it, in hot path mode check only warns (the cap is the limit); 0 (the default) sets none
         type: number
         default: 0
       budget-cold-seconds:
-        description: pipeline budget in seconds without such a cache; 0 (the default) sets none
+        description: pipeline budget in seconds without such a cache; fails or warns as budget-warm-seconds does; 0 (the default) sets none
         type: number
         default: 0
       budget-margin-percent:
-        description: overrun of the budget tolerated before the pipeline fails
+        description: overrun of the budget tolerated before the pipeline budget job fails, or in hot path mode before check warns
         type: number
         default: 20
       hot-path-seconds:
@@ -734,7 +734,8 @@ jobs:
             }
 
             // 5. The cap, independent of the budgets: a pull request must also leave room for the push, the cache
-            // save and the tags of the default branch. 6. The early warning of the run's kind, when set.
+            // save and the tags of the default branch. 6. The early warning of the run's kind, when set: it warns, it
+            // never fails; the cap is the one hard time limit.
             const cap = hotPathSeconds - (context.eventName === 'pull_request' ? 60 : 0)
             const budget = Number(kind === 'cold' ? env.COLD_BUDGET : env.WARM_BUDGET)
             const margin = Number(env.MARGIN_PERCENT)
@@ -742,8 +743,10 @@ jobs:
             const failures = []
             const took = elapsed() // the last sample: only the end of this job lies behind it
             if (took > cap) failures.push(`hot path: ${took} s, over the cap of ${cap} s (TST-018)`)
-            if (budget > 0 && took > limit) failures.push(`budget: the pipeline took ${took} s, over its ${kind} budget of ${budget} s plus ${margin} %`)
-            const verdict = `Hot path ${took} s: cap ${cap} s` + (budget > 0 ? `, ${kind} budget ${budget} s, failing above ${limit} s (+${margin} %)` : '') + '.'
+            const over = budget > 0 && took > limit
+            if (over) core.warning(`budget: the pipeline took ${took} s, over its ${kind} budget of ${budget} s plus ${margin} %; a warning, the cap of ${cap} s is the limit`)
+            const verdict = `Hot path ${took} s: cap ${cap} s` +
+              (budget > 0 ? `, ${kind} budget ${budget} s, warning above ${limit} s (+${margin} %)${over ? ': over it, a warning' : ''}` : '') + '.'
             core.info(verdict)
             await core.summary.addRaw(verdict, true).write()
             if (failures.length > 0) core.setFailed(failures.join('\n'))
