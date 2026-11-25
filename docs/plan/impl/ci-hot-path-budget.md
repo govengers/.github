@@ -939,9 +939,11 @@ before.
   without it.
 - **`go.mod`, `go.sum`**: `github.com/gorilla/websocket` bumped to
   `v1.5.4-0.20240701034025-d67f41855da4` (GO-2026-6278, red on main too).
-- **`cmd/server/main.go`, `cmd/server/application.go`**: `WORKER_POLL_INTERVAL` (default 1 s,
-  also a floor; the e2e harness sets 50 ms): the e2e tests waited on the job queue's 1 s idle poll
-  (holo design H126). `docs/deployment.md` names the variable.
+- **`cmd/server/main.go`, `cmd/server/application.go`**: `WORKER_POLL_INTERVAL`, default
+  `jobs.DefaultPollInterval` (the library's 1 s, by construction); `0` means the library default,
+  any other value is at least 10 ms (`minimumPollInterval`); the e2e harness sets 50 ms: the e2e
+  tests waited on the job queue's 1 s idle poll (holo design H126). `docs/deployment.md` names the
+  variable.
 - **`test/e2e/main_test.go`**: the e2e harness sets `WORKER_POLL_INTERVAL=50ms` and keeps the
   server's `STORAGE_PATH` in RAM.
 - **Docs**: `docs/testing.md` (requirements line, Budgets "Per pipeline", Rules 7, 8 and 12, the
