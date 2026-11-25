@@ -38,7 +38,8 @@ Not in scope (section 12 lists the follow-ups that need the owner's yes):
 - Moving the `v1` tag, rolling out to the two service repositories outside the org that call `@v1`.
 - Runner sizing and the runner image (section 10 names what this plan depends on).
 - Already in place and not re-planned: TST-014 (test cache), TST-015 (e2e skip record), TST-017
-  (5 s per test), per-job Go caches, `@smoke` on pull requests, `full: true` for schedule and tags.
+  (per-test times reported from the test JSON, a warning over 5 s, never a failure; MaPa,
+  25.11.2026), per-job Go caches, `@smoke` on pull requests, `full: true` for schedule and tags.
 - Not built: a coverage-based test impact analysis for journeys, a cache for Bun's install
   directory, vulncheck records for libraries, cleanup of untagged image versions, a run-wide
   deadline that cancels jobs (section 4 says why).
@@ -88,7 +89,8 @@ claimed: a busy runner pool makes the run slower, and the verdict says so.
 request the cap is 60 s lower (540 s): the default branch also pushes the image, saves the compile
 cache and tags (measured 17 to 19 s for the push; the rest estimated, re-measured in WP4), and a
 pull request must predict that run. A pull request builds the image for every platform and exports
-it to a tarball, so compile and compression are inside its measurement.
+it to a tarball, so compile and compression are inside its measurement. It is the one hard time
+limit: per-test times are reported, never failed (TST-017).
 
 **Blocking.** The verdict is a step of `check`, the one check branch protection requires. A pull
 request over the cap cannot merge; no new required check is needed, and no job can be skipped
@@ -123,7 +125,7 @@ this plan: it is the queue waits plus at most ten minutes per job on the longest
 | In the hot path | Recipe or job |
 |-----------------|---------------|
 | lint, vet | `just lint` |
-| unit tests of changed and affected packages, race detector, coverage gate, 5 s per test | `just test` (TST-014, TST-017) |
+| unit tests of changed and affected packages, race detector, coverage gate, a report of the slowest tests | `just test` (TST-014, TST-017) |
 | API end-to-end suite unless server and suite equal a green run | `just test-e2e` (TST-015) |
 | generated code, migrations and queries, OpenAPI against the base | recipes `generate-check`, `db-check`, `openapi-check` |
 | frontend type-check, design lint, component and page tests, build | `just test-typescript` |
@@ -692,6 +694,7 @@ No project name in any rule or template; the reference numbers speak of "the fir
 
 #### `rules/core/testing.md` (changed)
 
+- **TST-017, rewritten in place.** Heading `### TST-017 Report every test's time from the test JSON; a test over its budget warns, it never fails the run`. Severity `should`, P8 P9. Check: no report of the test times (the ten slowest in the job summary, a warning annotation per test over the budget, default 5 s with the race detector); a budget read from wall clock or logs instead of the JSON; a step that fails the run on one slow test; a slow test kept out of the report by an allowance list without a reason. Body: a wall-clock limit per test on shared runners is noise under load and blocks merges the cap would let through; the cap is the one hard time rule; the report names the test to speed up. Templates: `test-budget` in both justfiles reports and exits 0; templates.yml asserts the warning and exit 0; TST-005, TST-018, the README index, the templates README and REVIEW.md follow.
 - **TST-018, rewritten in place.** Heading `### TST-018 The hot path stays under ten minutes, and
   CI fails over it`. Severity `must` (the owner states it as a hard rule; a `must` is what the org
   declared non-negotiable). Principle P8. Check: a pipeline that gates a deployment without a cap
@@ -939,6 +942,8 @@ before.
   without it.
 - **`go.mod`, `go.sum`**: `github.com/gorilla/websocket` bumped to
   `v1.5.4-0.20240701034025-d67f41855da4` (GO-2026-6278, red on main too).
+- **`hack/testbudget`**: reports the test times and exits 0 for time (TST-017 rewritten); a
+  decision in holo's `docs/design.md` replaces the per-test gate.
 - **`cmd/server/main.go`, `cmd/server/application.go`**: `WORKER_POLL_INTERVAL`, default
   `jobs.DefaultPollInterval` (the library's 1 s, by construction); `0` means the library default,
   any other value is at least 10 ms (`minimumPollInterval`); the e2e harness sets 50 ms: the e2e
@@ -1023,15 +1028,16 @@ does so the number means the same on both:
   kind;
 - the summary shows runner, queue seconds and run seconds per job, so a breach reads as "pipeline
   grew" or "runners were busy";
-- nothing loosens the 5 s per test budget per runner kind.
+- the per-test report keeps the 5 s budget on both runner kinds; it warns, and the cap is the limit.
 
 Dependencies, to be tracked as an infrastructure task:
 
-1. CPU for the runner pods. They request one CPU without a limit; unit tests with the race
-   detector failed the 5 s budget there (5.43 s, 5.4 s) and jobs ran about twice as long as on
-   GitHub's runners, partly on cold caches. Until this is settled holo's unit tests are red on
-   that runner kind, whatever this plan changes; WP3 can then only be verified with `CI_RUNNER`
-   unset, which needs GitHub's runners to start jobs of the private repository (dependency 3).
+1. CPU for the runner pods. They requested one CPU without a limit; unit tests with the race
+   detector went over the 5 s budget there (5.43 s, 5.4 s); since TST-017 reports instead of
+   failing, this no longer turns holo's unit tests red, it shows as warnings and as time inside
+   the cap. Jobs ran about twice as long as on GitHub's runners, partly on cold caches. Fixed on
+   the runners in fs-us/iac 2fd1d33d, 15ee0e74, 64259654 and 415a3b2e: a request of 2 CPU,
+   `GOMAXPROCS=4`, and postgrestest's state on tmpfs.
 2. The in-cluster cache server keeps entries long enough to stay warm, and the runner image
    compresses with zstd and has Chromium's system libraries (`playwright install --with-deps`
    otherwise runs apt in every browser job).
@@ -1146,6 +1152,7 @@ govengers/holo
 | D20 | only the branch head moves the branch tag | right for re-runs, rollbacks and diverged history with one comparison; the price is named in section 5 |
 | D21 | the record key hashes the binaries the journeys execute, built after the frontend | the harness's Go tools and their dependencies are inputs too; one list then serves selection and key |
 | D22 | green-run records are carried only in hot path mode | a caller without new inputs must not start skipping in CI what its recipes skip locally |
+| D23 | per-test time budget is a report, not a gate | MaPa, 25.11.2026: a wall-clock limit per test on shared runners is noise and blocks merges the cap allows |
 | D15 | `workflow_dispatch` runs the full suite; one concurrency group per ref and event | a fix is confirmed without waiting a night, and a full run never delays a push |
 | D16 | holo keeps the recipe name `ui-e2e`; the workflow takes the name as input `browser` | recipes see `FULL`, as the extra recipes do; no rename across holo's docs |
 | D17 | library budget from the job's own clock | one job, no API call, no new permission |
