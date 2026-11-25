@@ -59,6 +59,7 @@ The library provides these justfile recipes:
 ### Only what changed is tested
 
 - The workflow restores the newest Go build and test cache saved on main (setup-go's own cache is off: it is keyed on `go.sum` alone and never refreshed). `go test` then reruns only the packages whose test binary changed (TST-014). Only pushes to main save the cache, so pull requests cannot crowd it out of the cache quota.
+- The cache holds the children of `~/.embedded-postgres-go` except `postgrestest`, postgrestest's server state: on the self-hosted runners it is a mount, tar cannot restore over it, and the whole restore would fail.
 - It restores and saves `sandbox/e2e-passed`, the records of green end-to-end runs: `just test-e2e` skips a suite whose server, suite and inputs equal a recorded run (TST-015).
 - The nightly run (`full: true`) runs everything uncached, so a flaky test cannot hide in the cache for longer than a day.
 
@@ -151,7 +152,7 @@ Until the `v1` tag carries this workflow, `<commit>` is a commit of main that do
 
 ### Caches
 
-Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its Go release and `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
+Every Go job restores its own cache, keyed on the installed Go release and `go.sum`: the Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries (the children of `~/.embedded-postgres-go` except `*-test`, where a service keeps its running test server's data, and except `postgrestest`, postgrestest's server state: on the self-hosted runners it is a mount, tar cannot restore over a mount point it does not own, and the whole restore would fail, leaving every job cold) and golangci-lint's cache. Pushes to the default branch save them; a pull request saves only when it found no cache of its Go release and `go.sum`, so its next push is warm without crowding the default branch's caches out. The e2e job carries `sandbox/e2e-passed`, the records of green runs, like `go-library.yml`.
 
 With `hot-path-seconds`:
 

@@ -135,8 +135,10 @@ jobs:
       # Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries and
       # golangci-lint's cache. The children of ~/.embedded-postgres-go, not the directory: an excluded path inside
       # an included directory still lands in the archive, and a service's own test server keeps its data (and a
-      # postmaster.pid that refuses the next start) under a *-test directory. The key names the installed patch:
-      # a cache of another toolchain holds no usable build or test result, so its run is cold (and saves).
+      # postmaster.pid that refuses the next start) under a *-test directory, postgrestest under postgrestest (a
+      # mount on the self-hosted runners, which tar cannot restore over: the whole restore fails). The key names
+      # the installed patch: a cache of another toolchain holds no usable build or test result, so its run is cold
+      # (and saves).
       - &cache-paths
         name: Cache paths
         id: cache-paths
@@ -150,6 +152,7 @@ jobs:
             go env GOMODCACHE
             echo "~/.embedded-postgres-go/*"
             echo "!~/.embedded-postgres-go/*-test"
+            echo "!~/.embedded-postgres-go/postgrestest"
             echo "~/.cache/golangci-lint"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
