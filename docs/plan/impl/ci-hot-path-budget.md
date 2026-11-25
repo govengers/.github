@@ -95,7 +95,12 @@ request over the cap cannot merge; no new required check is needed, and no job c
 around it. On the default branch the cap cannot gate the push it measures: the image is out when
 the verdict falls, the red run is the alarm. A re-run of some jobs repeats the earlier verdict;
 only an attempt in which every job ran again is measured anew, and without an earlier verdict a
-partial re-run fails.
+partial re-run fails. The cap judges a run as it ran, with its record skips, like any push of an unchanged tree: a
+complete re-run or an empty commit after an attempt over the cap can therefore pass, because the
+jobs whose inputs are unchanged skip on the records the earlier attempt saved. The cap stops a
+change's pipeline from growing unnoticed, not a deliberate bypass; the next change to the slow part
+is measured again, and the nightly full run bounds every job at 60 minutes (the owner's decision of
+25.11.2026, review of WP1).
 
 **Early warning.** `budget-warm-seconds` 300 and `budget-cold-seconds` 480 with 20 % margin stay,
 judged by the same step over the same span. They fail a pull request long before the cap is near.
@@ -295,7 +300,9 @@ selection and `SHARD`. So `browser_unaffected` may hold only Go code and embedde
 binaries fingerprint them) and files no journey process reads. A record is read and written only
 by a run without extra flags: `just ui-e2e --list` or a narrowed run proves nothing. A record
 (`sandbox/ui-e2e-passed/<key>`, one empty file) satisfies exactly its own selection and shard. CI now carries the records and Chromium's download
-between runs.
+between runs. Records are restored on re-runs too, so a complete re-run of an attempt over the cap
+skips what the attempt recorded green and is judged on that time (section 4, "Blocking"): the
+documented limit of the cap, not a defect.
 
 ## 7. Architecture
 

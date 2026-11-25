@@ -146,6 +146,13 @@ when `FULL=true`, and a green full run writes them. Without `hot-path-seconds` t
 caller's recipe that happens to write `sandbox/*-passed` then runs in CI exactly as before. The e2e job
 keeps its own records (`e2e-passed-`).
 
+Re-runs restore the records too. The hot path cap (S15) judges a run as it ran, with its record skips, like
+any push of an unchanged tree: a complete re-run or an empty commit after an attempt over the cap can
+therefore pass, because the jobs whose inputs are unchanged skip on the records the earlier attempt saved.
+The cap stops a change's pipeline from growing unnoticed, not a deliberate bypass; the next change to the
+slow part is measured again, and the nightly full run bounds every job at 60 minutes. Restoring records
+only on a first attempt was weighed and not built (the owner's decision, 25.11.2026).
+
 ## S13 The nightly alert is its own workflow
 
 `nightly-alert.yml` is called by a second job of the caller's `ci.yml`, not run inside `go-service.yml` or
