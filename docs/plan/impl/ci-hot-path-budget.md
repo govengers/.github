@@ -90,7 +90,7 @@ request the cap is 60 s lower (540 s): the default branch also pushes the image,
 cache and tags (measured 17 to 19 s for the push; the rest estimated, re-measured in WP4), and a
 pull request must predict that run. A pull request builds the image for every platform and exports
 it to a tarball, so compile and compression are inside its measurement. It is the one hard time
-limit: per-test times are reported, never failed (TST-017).
+limit: per-test times (TST-017) and the warm and cold budgets only warn.
 
 **Blocking.** The verdict is a step of `check`, the one check branch protection requires. A pull
 request over the cap cannot merge; no new required check is needed, and no job can be skipped
@@ -709,9 +709,9 @@ No project name in any rule or template; the reference numbers speak of "the fir
   timeout raised to make room instead of the suite made faster, split or moved to the scheduled
   run; a pull request pipeline that does not build the image the default branch pushes; a
   scheduled run that does not run what the hot path leaves out; with the govengers service
-  workflow `hot-path-seconds` unset or above 600, or the warm and cold budgets unset; with the
+  workflow `hot-path-seconds` unset or above 600; with the
   library workflow `budget-seconds` unset. Body: the definitions and the two tables of section 4,
-  the cap and the early warning, 60 minutes for the full run, the generic failure mode of section
+  the cap and the early warning (warnings only; standards 5af5bae), 60 minutes for the full run, the generic failure mode of section
   1, the reference table: it keeps the measured rows from before the hot path and the laptop rows,
   adds the 56 s row of all journeys in CI and three pending rows (warm pull request, cold pull
   request, push to main; filled in WP4), and drops the 119 s row; and the re-run limit: the cap
@@ -982,7 +982,10 @@ same step, and that commit, not WP1's, is the one `v1` moves to.
   `concurrency.group: ci-${{ github.ref }}-${{ github.event_name }}`; service:
   `hot-path-seconds: 600`, the starter with a commented `# browser: ui-e2e`, the standards
   template with `browser: ui-e2e`; library: `budget-seconds: 300`; the `alert` job as in holo with
-  `@v1` (`needs: go-service` or `go-library` in the starters). Header comments updated.
+  `@v1` (`needs: go-service` or `go-library` in the starters). Header comments updated; the
+  comments on the budgets in `templates/service/.github/workflows/ci.yml` (lines 39 and 40,
+  "TST-018: fails a pipeline over 5 minutes (+20 %)") say "warns": in hot path mode the warm and
+  cold budgets only warn (D24).
 - `templates/README.md` in the standards: the `ci.yml` row and the hot path and alert bullets.
 - README here: the alert snippet moves from the commit pin to `@v1`.
 
