@@ -231,7 +231,7 @@ the branch backwards. Locally there is no `BASE_SHA`: the merge base of `HEAD` w
 a commit in the clone (a first push, zeros, a `BASE_REF` without a remote ref): every journey. A
 shallow clone selects every journey, with and without `BASE_SHA`. A changed path below
 `browser_specs` that is not an existing spec (a helper, a deleted spec) is no spec for rule 2 and
-falls to rule 4: every journey.
+falls to rule 4: every journey. In CI (`CI` set) without `BASE_SHA`: every journey.
 
 **Claims.** A spec names the paths whose journeys it holds in one comment line, repository
 relative, space separated; a path may be claimed by several specs:
@@ -242,7 +242,7 @@ relative, space separated; a path may be claimed by several specs:
 
 Convention first: a spec always covers itself, and `@smoke` journeys always run. The claim line is
 the only hand-kept part beside one list (below), it lives in the spec it describes, and forgetting
-it is safe.
+it is safe. A carriage return at the end of a claim line is dropped.
 
 **Rules, in this order, per changed path.**
 
@@ -294,9 +294,11 @@ the failure mode of section 1.
 the server binary in the key embeds this run's frontend, on a fresh checkout as on the tenth run):
 the binaries the journeys execute (`browser_binaries`: the server and every Go program the harness
 runs, the database launcher included, built reproducibly, so Go code, its dependencies and what it
-embeds are in the key through them), every file that exists, that git tracks or does
-not ignore, and that is not below `browser_unaffected` (path and content), the Bun version, the
-selection and `SHARD`. So `browser_unaffected` may hold only Go code and embedded files (the
+embeds are in the key through them), every file that exists, that git tracks or does not ignore,
+and that is not below `browser_unaffected`, plus every path a spec claims even below it (path,
+content and executable bit), the Bun version, the selection and `SHARD`. Each part of the key is
+computed on its own; an input that cannot be hashed fails the run instead of leaving the key
+shorter. So `browser_unaffected` may hold only Go code and embedded files (the
 binaries fingerprint them) and files no journey process reads. A record is read and written only
 by a run without extra flags: `just ui-e2e --list` or a narrowed run proves nothing. A record
 (`sandbox/ui-e2e-passed/<key>`, one empty file) satisfies exactly its own selection and shard. CI now carries the records and Chromium's download
@@ -688,7 +690,12 @@ No project name in any rule or template; the reference numbers speak of "the fir
   the cap and the early warning, 60 minutes for the full run, the generic failure mode of section
   1, the reference table: it keeps the measured rows from before the hot path and the laptop rows,
   adds the 56 s row of all journeys in CI and three pending rows (warm pull request, cold pull
-  request, push to main; filled in WP4), and drops the 119 s row.
+  request, push to main; filled in WP4), and drops the 119 s row; and the re-run limit: the cap
+  judges a run as it ran, with its record skips, like any push of an unchanged tree, so a complete
+  re-run or an empty commit after an attempt over the cap can pass, because the jobs whose inputs
+  are unchanged skip on the records the earlier attempt saved. The cap stops a change's pipeline
+  from growing unnoticed, not a deliberate bypass; the next change to the slow part is measured
+  again, and the nightly full run bounds every job at 60 minutes.
 - **TST-020, rewritten in place.** Heading `### TST-020 Browser journeys run in parallel on their
   own state; a change runs the journeys it needs, the scheduled run all of them`. Severity
   `should`. Check: a Playwright run with one worker, without full parallelism, or with a serial
@@ -786,6 +793,11 @@ No project name in any rule or template; the reference numbers speak of "the fir
   nightly alert.
 - `playbooks/deriving-an-application.md` line 118: the browser journeys of the core object, one
   of them `@smoke`, in a spec that claims the object's pages.
+  `playbooks/deriving-an-application.md` section 4: the `derive-check` recipe gets the record of
+  section 4's table (key `shasum` of the files below `derive_inputs` and of the justfile,
+  `sandbox/derive-passed/<key>`, ignored with `FULL=true` or flags); the heading says it derives
+  the sample application, and the paragraph says a foundation break fails in the pull request that
+  changes the derivation, otherwise in the nightly (TST-021).
 - `.github/testdata/journeys/` (new), a miniature repository: `ui/e2e/accounts.spec.ts`
   (`// covers: ui/src/pages/Users`), `ui/e2e/tasks.spec.ts` (`// covers: ui/src/pages/Board
   ui/src/pages/Task changelog`), `ui/e2e/broken.spec.ts.txt` (a spec with a claim on a missing
@@ -796,7 +808,11 @@ No project name in any rule or template; the reference numbers speak of "the fir
   browser-select <paths>` for the cases T1 of section 9 and compares the output; and a step
   `justfile journey selection from git` that copies the miniature repository into a temporary
   directory, makes a small history there (`git init`, a base commit, a branch) and runs
-  `browser-select` without arguments for the cases T5.
+  `browser-select` without arguments for the cases T5; and a step `justfile journey records` that
+  runs `ui-e2e` on a stub service (the miniature repository, two stub Go programs, shims for `bun`
+  and `bunx`) for the record cases: skip, flags, FULL, SHARD, a red run, an untracked shared file,
+  a mode change, a claimed doc below `browser_unaffected`, a file named `-a.md`, an unreadable
+  file, the browser install in CI.
 
 ### WP3 govengers/holo
 
@@ -943,11 +959,11 @@ Tests written with the code:
 
 | Id | Where | Cases |
 |----|-------|-------|
-| T1 | standards `templates.yml`, the miniature repository | no path: `@smoke`; `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `ui/e2e/tasks.spec.ts`: `@smoke\|tasks\.spec\.ts`; `ui/src/pages/Users/Users.test.ts`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md` (claimed Markdown): `@smoke\|tasks\.spec\.ts`; `docs/notes.md`: `@smoke`; `ui/src/ui/Button/Button.vue`: `all`; `ui/bun.lock`: `all`; `justfile`: `all`; `assets/logo.svg` (nobody classified it): `all`; `ui/src/pages/Task/Task.vue` (two specs would claim it in holo, one here) with `ui/src/pages/Users/Users.vue`: both specs, each once; `FULL=true`: `all` (every other case sets `FULL=false`, so the step also passes where `FULL` is set); with the broken spec copied in: exit 1 naming spec and path; `ui/e2e/helpers.ts` (below the specs, no spec): `all`; `ui/src/pages/Board/Board.vue`, `ui/src/pages/Task/Task.vue` and `ui/e2e/tasks.spec.ts` together: `@smoke\|tasks\.spec\.ts`, the spec once; a path with spaces is kept as one path |
+| T1 | standards `templates.yml`, the miniature repository | no path: `@smoke`; `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `ui/e2e/tasks.spec.ts`: `@smoke\|tasks\.spec\.ts`; `ui/src/pages/Users/Users.test.ts`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md` (claimed Markdown): `@smoke\|tasks\.spec\.ts`; `docs/notes.md`: `@smoke`; `ui/src/ui/Button/Button.vue`: `all`; `ui/bun.lock`: `all`; `justfile`: `all`; `assets/logo.svg` (nobody classified it): `all`; `ui/src/pages/Task/Task.vue` (two specs would claim it in holo, one here) with `ui/src/pages/Users/Users.vue`: both specs, each once; `FULL=true`: `all` (every other case sets `FULL=false`, so the step also passes where `FULL` is set); with the broken spec copied in: exit 1 naming spec and path; `ui/e2e/helpers.ts` (below the specs, no spec): `all`; `ui/src/pages/Board/Board.vue`, `ui/src/pages/Task/Task.vue` and `ui/e2e/tasks.spec.ts` together: `@smoke\|tasks\.spec\.ts`, the spec once; a path with spaces is kept as one path; FULL=true with the broken spec also exits 1; a claim line with CRLF selects its spec |
 | T2 | holo `browser-select-check`, foundation only | `internal/service/user.go`: `@smoke`; `ui/src/pages/Users/Users.vue`: `@smoke\|accounts\.spec\.ts`; `changelog/0.1.md`: `@smoke\|operations\.spec\.ts`; `ui/src/ui/Button/Button.vue`: `all`; `justfile`: `all`; and `bunx playwright test --list --grep "<pattern of the Users case>"` lists more journeys than `--grep @smoke` and fewer than no pattern; the partial cases with `FULL=false`, one case with `FULL=true` expecting `all`. `just check` and `FULL=true just derive-check` both pass with it: a full run and the derived application, which has no domain specs, run the same check |
 | T3 | holo `ui-e2e`, run by hand and noted in the pull request | from a fresh clone: the second run without a change prints the skip; a change of `hack/scratchdb` or a bump of the launcher's version in `go.mod` runs again; a change of one page file runs that spec; a new untracked file below `ui/src/ui` runs every journey and is not skipped by the earlier record; `just ui-e2e --list` writes no record; `FULL=true` ignores the record |
 | T4 | holo journeys | `FULL=true just ui-e2e --repeat-each=5 --workers=4` green three times in a row, and `SHARD=1/2` plus `SHARD=2/2` green: no journey depends on another |
-| T5 | standards `templates.yml`, a temporary git history of the miniature repository | `BASE_SHA` of the base commit, a page file changed on the branch: that spec; `BASE_SHA` of a commit ahead of the checkout (the branch moved back) with a shared file differing: `all`; `BASE_SHA` of zeros, and of a commit not in the clone: `all`; a page file renamed out of a claimed directory: the spec of the old path; no `BASE_SHA`, a branch off the base with one committed and one untracked page file, the untracked one with a space in its name: both specs (merge base, untracked included); a `BASE_REF` without a remote ref: `all`; a shallow clone: `all` |
+| T5 | standards `templates.yml`, a temporary git history of the miniature repository | `BASE_SHA` of the base commit, a page file changed on the branch: that spec; `BASE_SHA` of a commit ahead of the checkout (the branch moved back) with a shared file differing: `all`; `BASE_SHA` of zeros, and of a commit not in the clone: `all`; a page file renamed out of a claimed directory: the spec of the old path; no `BASE_SHA`, a branch off the base with one committed and one untracked page file, the untracked one with a space in its name: both specs (merge base, untracked included); a `BASE_REF` without a remote ref: `all`; a shallow clone: `all`; a shallow clone with the base inside it: all, with and without `BASE_SHA`; `CI` set without `BASE_SHA`: all |
 
 Gates: `actionlint` in `govengers/.github` and in the standards (`templates.yml` also runs
 hadolint and parses both justfiles); `just check` in holo; no `must` finding of a review with the
