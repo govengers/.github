@@ -518,10 +518,17 @@ Details, in the order of the file:
         carried into a re-run keeps old timestamps), run seconds; then `**hot path** (<warm|cold>
         caches, attempt <n>) | <elapsed>`. `elapsed` = now minus `run_started_at`, sampled once
         more as the last statement before the verdict, so only the end of the job lies behind it.
+        "Now" is GitHub's clock, like `run_started_at`: the `date` header of the run attempt's
+        response plus the runner time passed since, so a self-hosted node with a skewed clock does
+        not shift the verdict (the header counts whole seconds).
      4. A re-run attempt is complete only with evidence for every expected job. The expected jobs
         follow from the inputs and the needs: each need whose result is not `skipped`, one job
         per entry of `inputs.recipes`, one per shard of `inputs.browser-shards`. Each must be in
-        the attempt's list with a `started_at` at or after the attempt's `run_started_at`. One
+        the attempt's list with a `started_at` at or after the attempt's `run_started_at`, under
+        its full name: the caller's prefix of this `check` job (the job in progress on
+        `RUNNER_NAME`) plus the job's name, so a second call of the workflow in the same run is
+        never evidence; the previous attempt's `check` is found the same way. This `check` job not
+        in the list: a warning, and names are matched by their end. One
         missing, or older (it did not run again): the attempt is partial; read the steps `Hot path
         budget` and `Every job passed or was skipped by its input` of the `check` job of the
         previous attempt. The budget step failed: fail with `hot path: attempt <n-1> broke the

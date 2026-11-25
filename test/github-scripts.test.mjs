@@ -44,13 +44,14 @@ const success = { result: 'success', outputs: {} }
 const skipped = { result: 'skipped', outputs: {} }
 const prNeeds = { lint: success, test: success, e2e: success, typescript: skipped, recipes: success, browser: success, 'image-build': success, image: skipped }
 
-function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, env = {} }) {
+// now: GitHub's clock (the date header); local: the runner's, which may be skewed.
+function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, local = now, env = {} }) {
   const attempt = Math.max(...Object.keys(attempts).map(Number))
   const github = {
     rest: { actions: {
       getWorkflowRunAttempt: async ({ attempt_number: n }) => {
         if (!attempts[n].readable) throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 })
-        return { data: { run_started_at: at(attempts[n].started) } }
+        return { headers: { date: new Date(T0 + now * 1000).toUTCString() }, data: { run_started_at: at(attempts[n].started) } }
       },
       listJobsForWorkflowRunAttempt: 'listJobsForWorkflowRunAttempt',
     } },
@@ -59,9 +60,9 @@ function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, env 
   return run(hotPath, {
     github,
     context: { repo: { owner: 'govengers', repo: 'holo' }, runId: 7, eventName: event },
-    now: T0 + now * 1000,
+    now: T0 + local * 1000,
     env: {
-      GITHUB_RUN_ATTEMPT: String(attempt), HOT_PATH_SECONDS: '600', WARM_BUDGET: '0', COLD_BUDGET: '0', MARGIN_PERCENT: '20',
+      RUNNER_NAME: 'fuji-check', GITHUB_RUN_ATTEMPT: String(attempt), HOT_PATH_SECONDS: '600', WARM_BUDGET: '0', COLD_BUDGET: '0', MARGIN_PERCENT: '20',
       TEST_CACHE: 'warm', IMAGE_CACHE: 'warm', NEEDS: JSON.stringify(needs), RECIPES: '["db-check"]', BROWSER_SHARDS: '2', ...env,
     },
   })
@@ -151,6 +152,26 @@ test('hot path: expected jobs follow the needs, a skipped need expects nothing',
   const jobs = allJobs(1000).filter((j) => !/just|browser/.test(j.name))
   const complete = { 1: { started: 0, readable: true, jobs: [checkJob(400, 'failure')] }, 2: { started: 1000, readable: true, jobs } }
   assert.deepEqual((await checkRun({ attempts: complete, needs: fewer, now: 1100 })).failed, [])
+})
+
+test('hot path: the verdict takes GitHub\'s clock, not a skewed runner clock', async () => {
+  const attempts = { 1: { started: 0, readable: true, jobs: allJobs(0) } }
+  assert.deepEqual((await checkRun({ attempts, now: 500, local: 900 })).failed, [])
+  assert.deepEqual((await checkRun({ attempts, now: 600, local: 100 })).failed, ['hot path: 600 s, over the cap of 540 s (TST-018)'])
+})
+
+test('hot path: with two calls of the workflow, only this call\'s jobs and verdict count', async () => {
+  const other = (jobs) => jobs.map((j) => ({ ...j, name: j.name.replace(/^service \//, 'other /') }))
+  const self = job('check / lint, test, e2e, vulncheck', 1100, { status: 'in_progress', runner_name: 'fuji-check', completed_at: null })
+  // This call's shard 2 did not run again; the other call's did.
+  const jobs = [...other(allJobs(1000)), ...allJobs(1000).filter((j) => !j.name.endsWith('(2)')), self]
+  const earlier = [...other([checkJob(400, 'success')]), checkJob(400, 'failure')]
+  const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), ...earlier] }, 2: { started: 1000, readable: true, jobs } }
+  assert.deepEqual((await checkRun({ attempts, now: 1100 })).failed,
+    ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs'])
+  // Every job of this call ran again: judged anew, whatever the other call did.
+  const complete = { ...attempts, 2: { started: 1000, readable: true, jobs: [...allJobs(1000), self] } }
+  assert.deepEqual((await checkRun({ attempts: complete, now: 1100 })).failed, [])
 })
 
 // The nightly alert.

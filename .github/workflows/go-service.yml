@@ -662,14 +662,20 @@ jobs:
             // 2. The run attempt and its jobs.
             const listJobs = (attemptNumber) => github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
               { owner, repo, run_id: context.runId, attempt_number: attemptNumber, per_page: 100 })
-            let startedAt, jobs
+            let startedAt, jobs, serverNow, localAtResponse
             try {
-              startedAt = (await github.rest.actions.getWorkflowRunAttempt({ owner, repo, run_id: context.runId, attempt_number: attempt })).data.run_started_at
+              const response = await github.rest.actions.getWorkflowRunAttempt({ owner, repo, run_id: context.runId, attempt_number: attempt })
+              localAtResponse = Date.now()
+              serverNow = Date.parse(response.headers?.date)
+              startedAt = response.data.run_started_at
               jobs = await listJobs(attempt)
             } catch (error) {
               return core.setFailed(`hot path: the run's jobs are not readable (${error.message}); the caller must grant actions: read`)
             }
-            const elapsed = () => Math.floor((Date.now() - Date.parse(startedAt)) / 1000)
+            // GitHub's clock, as run_started_at is: a self-hosted node with a skewed clock would shift the verdict. The
+            // response's date header counts whole seconds; the runner's clock only adds the time passed since.
+            const now = () => (Number.isNaN(serverNow) ? Date.now() : serverNow + Date.now() - localAtResponse)
+            const elapsed = () => Math.floor((now() - Date.parse(startedAt)) / 1000)
             const kind = env.TEST_CACHE === 'cold' || env.IMAGE_CACHE === 'cold' ? 'cold' : 'warm'
 
             // 3. The summary: a breach reads as "the pipeline grew" or as "the runners were busy". A job carried into
@@ -685,8 +691,14 @@ jobs:
             await core.summary.addRaw(table, true).write()
 
             // 4. A re-run attempt is complete only when every expected job ran in it: each need that was not skipped,
-            // one job per recipe and per browser shard, each started at or after the attempt's start.
+            // one job per recipe and per browser shard, each started at or after the attempt's start. Jobs are this
+            // invocation's: their names carry the caller's prefix of this check job (found by its runner), so a second
+            // call of the workflow in the same run is never evidence.
             if (attempt > 1) {
+              const self = jobs.find((job) => job.status === 'in_progress' && job.runner_name === env.RUNNER_NAME && job.name.endsWith(CHECK))
+              const prefix = self ? self.name.slice(0, -CHECK.length) : null
+              if (prefix === null) core.warning(`hot path: this check job is not in the attempt's jobs; matching job names by their end`)
+              const named = (job, name) => (prefix === null ? job.name.endsWith(` / ${name}`) : job.name === prefix + name)
               const shards = Number(env.BROWSER_SHARDS)
               const names = {
                 lint: ['lint, vulncheck'],
@@ -699,13 +711,13 @@ jobs:
                 image: ['build, attest and push the image'],
               }
               const expected = Object.entries(JSON.parse(env.NEEDS)).filter(([, need]) => need.result !== 'skipped').flatMap(([id]) => names[id])
-              const ranAgain = (name) => jobs.some((job) => job.name.endsWith(` / ${name}`) && job.started_at && Date.parse(job.started_at) >= Date.parse(startedAt))
+              const ranAgain = (name) => jobs.some((job) => named(job, name) && job.started_at && Date.parse(job.started_at) >= Date.parse(startedAt))
               const missing = expected.filter((name) => !ranAgain(name))
               if (missing.length > 0) {
                 core.info(`Attempt ${attempt} did not run again: ${missing.join(', ')}.`)
                 // A verdict counts only when every job of that attempt passed: a job that failed early shortened
                 // the pipeline it measured.
-                const earlier = (await listJobs(attempt - 1)).find((job) => job.name.endsWith(CHECK))
+                const earlier = (await listJobs(attempt - 1)).find((job) => (prefix === null ? job.name.endsWith(CHECK) : job.name === prefix + CHECK))
                 const conclusion = (name) => earlier?.steps?.find((step) => step.name === name)?.conclusion
                 const verdict = conclusion('Hot path budget')
                 if (verdict === 'failure') {

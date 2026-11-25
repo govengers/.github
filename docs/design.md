@@ -174,7 +174,9 @@ The cap is a step of `check`, the one check branch protection requires, not a jo
 request over the cap cannot merge without a new required check, and no job can be skipped around it. The
 step reads the run attempt and its jobs from the API, writes a table of runner, queue and run seconds per
 job, and samples the elapsed time once more as its last statement before the verdict, so only the end of
-the job lies behind the span. A re-run attempt is complete only when every expected job (each need that was
+the job lies behind the span. Its clock is GitHub's (the date header of the API's response plus the time
+passed since), so a self-hosted runner with a skewed clock does not move the verdict. Evidence of a re-run
+is taken only from this call's jobs: their names carry the caller's prefix of the check job itself. A re-run attempt is complete only when every expected job (each need that was
 not skipped, one per recipe and per shard) started at or after the attempt's start; a partial attempt
 repeats the verdict of the step in the attempt before only when that attempt's results step passed too,
 and fails otherwise: a job that failed early, or a cancelled run, shortened the pipeline the earlier step
