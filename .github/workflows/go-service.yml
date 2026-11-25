@@ -813,7 +813,9 @@ jobs:
     name: publish badges
     needs: [lint, test, e2e, typescript, recipes, browser]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-    runs-on: ubuntu-latest
+    # In hot path mode on the checks' runner kind, like check: GitHub's runners need not start for a private
+    # repository. It runs no code of the calling repository.
+    runs-on: ${{ inputs.hot-path-seconds > 0 && ((!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
     concurrency:
       group: badges-${{ github.repository }} # an older run must not overwrite newer badges
       cancel-in-progress: true
