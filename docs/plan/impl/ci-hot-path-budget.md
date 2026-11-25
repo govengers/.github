@@ -555,6 +555,8 @@ Details, in the order of the file:
    are today's, and the new record steps do not run. The two new jobs show in the run as skipped
    checks (`browser journeys`, `build the image`), as `end-to-end tests` or `TypeScript tests` do
    when their input is off; branch protection is not affected, since it requires only `check`.
+   The recipes see two more environment variables: `BASE_SHA` in the recipe jobs, `RECORDS_JOB`
+   in the lint and recipe jobs, harmless unless a recipe already reads a variable of that name.
 9. **Header comment** of the file: the hot path mode, the three inputs, `BASE_SHA`, `SHARD`.
 
 #### `.github/workflows/go-library.yml` (changed)
