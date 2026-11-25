@@ -1,9 +1,13 @@
 // Runs the github-script steps of the workflows against fakes of the GitHub API: the hot path verdict of
 // go-service.yml (cap, budgets, re-run completeness) and the issue logic of nightly-alert.yml (run ordering,
-// assignees). Needs node 20 or newer and yq on the PATH: node --test test/
+// assignees), and the bash steps that decide the image tags and the check result against fake git and docker.
+// Needs node 20 or newer, bash and yq on the PATH: node --test test/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const script = (file, query) => execFileSync('yq', [query, file], { encoding: 'utf8' })
 const hotPath = script('.github/workflows/go-service.yml', '.jobs.check.steps[] | select(.name == "Hot path budget") | .with.script')
@@ -303,4 +307,85 @@ test('alert: nobody to assign fails every run, red or green, after the issue is 
   const restored = await alertRun(empty.github, { result: 'failure', number: 13, assignees: 'ada' })
   assert.deepEqual(restored.failed, [])
   assert.deepEqual(empty.state.issues[0].assignees, [{ login: 'ada' }])
+})
+
+// The bash steps of go-service.yml, run as GitHub runs them, with git and docker faked on the PATH.
+
+const promote = script('.github/workflows/go-service.yml', '.jobs.image.steps[] | select(.id == "promote") | .run')
+const results = script('.github/workflows/go-service.yml', '.jobs.check.steps[] | select(.name == "Every job passed or was skipped by its input") | .run')
+
+function bash(source, env, fakes = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'step-'))
+  for (const [name, body] of Object.entries(fakes)) {
+    writeFileSync(join(dir, name), `#!/usr/bin/env bash\n${body}\n`)
+    chmodSync(join(dir, name), 0o755)
+  }
+  writeFileSync(join(dir, 'step.sh'), source)
+  const output = join(dir, 'output')
+  writeFileSync(output, '')
+  const run = spawnSync('bash', ['-e', join(dir, 'step.sh')], {
+    encoding: 'utf8',
+    env: { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_OUTPUT: output, DIR: dir, ...env },
+  })
+  const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n') : []
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, output: readFileSync(output, 'utf8'), calls }
+}
+
+const git = 'if [ "$HEAD" = fail ]; then echo "fatal: unable to access" >&2; exit 128; fi; printf "%s\\trefs/heads/main\\n" "$HEAD"'
+// imagetools create logs its arguments and writes the metadata file buildx writes.
+const docker = `echo "$*" >> "$DIR/calls"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --metadata-file ]; then printf '{\\n  "containerimage.descriptor": {\\n    "mediaType": "application/vnd.oci.image.index.v1+json",\\n    "digest": "%s",\\n    "size": 1609\\n  },\\n  "image.name": "x"\\n}' "$CREATED" > "$2"; fi
+  shift
+done`
+const SHA = 'abc1234def5678abc1234def5678abc1234def56'
+const CREATED = `sha256:${'c0ffee42'.repeat(8)}`
+const branchTags = `ghcr.io/govengers/holo:main\nghcr.io/govengers/holo:sha-abc1234`
+const promoteEnv = (env) => ({ IMAGE: 'ghcr.io/govengers/holo', DIGEST: 'sha256:built', GITHUB_SHA: SHA, CREATED, REF_TYPE: 'branch', BRANCH: 'main', TAGS: branchTags, HEAD: SHA, ...env })
+
+test('promote: the branch head gets both tags, and the output is the digest create wrote', () => {
+  const run = bash(promote, promoteEnv({}), { git, docker })
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(run.calls.length, 1)
+  assert.match(run.calls[0], /^buildx imagetools create --metadata-file \S+\/promote\.json --tag ghcr\.io\/govengers\/holo:main --tag ghcr\.io\/govengers\/holo:sha-abc1234 ghcr\.io\/govengers\/holo@sha256:built$/)
+  assert.equal(run.output, `digest=${CREATED}\n`)
+})
+
+test('promote: a moved or deleted branch head keeps the branch tag where it is', () => {
+  for (const [head, shown] of [['f00ba4f00ba4f00ba4f00ba4f00ba4f00ba4f00b', 'f00ba4f00ba4f00ba4f00ba4f00ba4f00ba4f00b'], ['', 'gone']]) {
+    const run = bash(promote, promoteEnv({ HEAD: head }), { git, docker })
+    assert.equal(run.status, 0, run.stderr)
+    assert.ok(run.stdout.includes(`ghcr.io/govengers/holo:main not moved: the branch head is ${shown}, this run built ${SHA}`))
+    assert.match(run.calls[0], / --tag ghcr\.io\/govengers\/holo:sha-abc1234 ghcr\.io\/govengers\/holo@sha256:built$/)
+    assert.ok(!run.calls[0].includes(':main'))
+  }
+})
+
+test('promote: a failing ls-remote writes no tag; a tag ref writes every tag; no digest in the metadata fails', () => {
+  const failing = bash(promote, promoteEnv({ HEAD: 'fail' }), { git, docker })
+  assert.notEqual(failing.status, 0)
+  assert.deepEqual(failing.calls, [])
+  const tags = 'ghcr.io/govengers/holo:1.2.3\nghcr.io/govengers/holo:1.2\nghcr.io/govengers/holo:latest\nghcr.io/govengers/holo:sha-abc1234'
+  const release = bash(promote, promoteEnv({ REF_TYPE: 'tag', BRANCH: 'v1.2.3', TAGS: tags, HEAD: 'fail' }), { git, docker })
+  assert.equal(release.status, 0, release.stderr)
+  assert.match(release.calls[0], /--tag ghcr\.io\/govengers\/holo:1\.2\.3 --tag ghcr\.io\/govengers\/holo:1\.2 --tag ghcr\.io\/govengers\/holo:latest --tag ghcr\.io\/govengers\/holo:sha-abc1234 /)
+  const empty = bash(promote, promoteEnv({ CREATED: '' }), { git, docker })
+  assert.notEqual(empty.status, 0)
+  assert.match(empty.stderr, /promote: imagetools create wrote no digest to its metadata/)
+})
+
+test('check: a failed or cancelled job fails, a skip passes only where no input or event enables the job', () => {
+  const off = { EXPECT_BROWSER: 'false', EXPECT_IMAGE_BUILD: 'false', EXPECT_IMAGE: 'false', BROWSER: 'skipped', IMAGE_BUILD: 'skipped', IMAGE: 'skipped' }
+  // Without the new inputs: the five jobs of v1, then browser, image-build and the image job's stand-in.
+  assert.equal(bash(results, { ...off, RESULTS: 'success success success skipped success skipped skipped skipped' }).status, 0)
+  assert.equal(bash(results, { ...off, RESULTS: 'success failure success skipped success skipped skipped skipped' }).status, 1)
+  assert.equal(bash(results, { ...off, RESULTS: 'success success cancelled skipped success skipped skipped skipped' }).status, 1)
+  // Hot path mode on a push: the image job is enabled, so its skip (a cancelled run) fails check.
+  const push = { ...off, EXPECT_BROWSER: 'true', EXPECT_IMAGE_BUILD: 'true', EXPECT_IMAGE: 'true', BROWSER: 'success', IMAGE_BUILD: 'success' }
+  assert.equal(bash(results, { ...push, IMAGE: 'success', RESULTS: 'success success success skipped success success success success' }).status, 0)
+  const skipped = bash(results, { ...push, IMAGE: 'skipped', RESULTS: 'success success success skipped success success success skipped' })
+  assert.equal(skipped.status, 1)
+  assert.match(skipped.stderr, /check: build, attest and push the image is skipped, but the inputs and the event enable it/)
+  const noBrowser = bash(results, { ...push, BROWSER: 'skipped', IMAGE: 'success', RESULTS: 'success success success skipped success skipped success success' })
+  assert.match(noBrowser.stderr, /check: browser journeys is skipped/)
 })

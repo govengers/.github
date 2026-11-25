@@ -614,8 +614,11 @@ The two `github-script` steps (`Hot path budget`, the nightly alert) run under `
 fakes of the GitHub API: the org cap, the pull request allowance, the early warning by run kind, the
 summary table, complete and partial re-runs (a carried job, a missing shard, each earlier verdict), and
 for the alert creation, comments, assignee reconciliation, issue identity per workflow ref, run
-ordering by number and attempt, a late old red run, and the failures without an assignee. The test
-reads the scripts out of the workflow files with `yq`; `actionlint.yml` gains a job `github-script
+ordering by number and attempt, a late old red run, and the failures without an assignee. The bash
+steps `promote` and `Every job passed or was skipped by its input` run against fake `git` and
+`docker` on the `PATH`: head equal, head moved or gone, `ls-remote` failing, a tag ref, metadata
+without a digest; legacy and hot path results. The test reads the scripts out of the workflow files
+with `yq`; `actionlint.yml` gains a job `github-script
 tests` that runs it.
 
 ```mermaid
