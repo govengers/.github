@@ -403,3 +403,15 @@ test('check: a failed or cancelled job fails, a skip passes only where no input 
   const noBrowser = bash(results, { ...push, BROWSER: 'skipped', IMAGE: 'success', RESULTS: 'success success success skipped success skipped success success' })
   assert.match(noBrowser.stderr, /check: browser journeys is skipped/)
 })
+
+const libraryBudget = script('.github/workflows/go-library.yml', '.jobs.check.steps[] | select(.name == "Budget") | .run')
+
+test('library budget: over the budget fails, a fraction fails instead of passing silently', () => {
+  const start = String(Math.floor(Date.now() / 1000) - 5)
+  const budget = (value) => bash(libraryBudget, { BUDGET: value, BUDGET_START: start, GITHUB_STEP_SUMMARY: '/dev/null' })
+  assert.equal(budget('300').status, 0)
+  assert.match(budget('1').stderr, /^budget: the checks took \d+ s, over the budget of 1 s \(TST-018\)$/m)
+  const fraction = budget('0.5')
+  assert.equal(fraction.status, 1)
+  assert.match(fraction.stderr, /budget: budget-seconds is 0\.5, not a whole number of seconds/)
+})

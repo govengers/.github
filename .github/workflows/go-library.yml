@@ -217,6 +217,10 @@ jobs:
         env:
           BUDGET: ${{ inputs.budget-seconds }}
         run: |
+          # A fraction would make -gt an error inside if, which reads as false: the budget would pass silently.
+          case "$BUDGET" in
+            '' | *[!0-9]*) echo "budget: budget-seconds is $BUDGET, not a whole number of seconds" >&2; exit 1 ;;
+          esac
           took=$(($(date +%s) - BUDGET_START))
           echo "The checks took $took s of a budget of $BUDGET s." | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$took" -gt "$BUDGET" ]; then

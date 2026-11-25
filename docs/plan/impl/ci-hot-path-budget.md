@@ -565,7 +565,9 @@ Details, in the order of the file:
 - First step of `check`: `Start the budget clock`, writes `BUDGET_START=$(date +%s)` to
   `$GITHUB_ENV`.
 - Last step: `Budget`, `if: ${{ !cancelled() && !inputs.full && inputs.budget-seconds > 0 }}`,
-  fails with `budget: the checks took <n> s, over the budget of <m> s (TST-018)`. The job's own
+  fails with `budget: the checks took <n> s, over the budget of <m> s (TST-018)`, and with
+  `budget: budget-seconds is <m>, not a whole number of seconds` on a fraction (a number input
+  takes one, and bash would compare it as false). The job's own
   time, no API call, so no new permission. Queue time is not counted: a library gates no
   deployment.
 
