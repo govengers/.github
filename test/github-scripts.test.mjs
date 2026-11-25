@@ -183,16 +183,22 @@ test('hot path: with two calls of the workflow, only this call\'s jobs and verdi
 const REF = 'govengers/holo/.github/workflows/ci.yml@refs/heads/main'
 const MARKER = `<!-- nightly-alert ${REF} -->`
 
-function repository({ issues = [], label = true, assignable = ['ada'] } = {}) {
+function repository({ issues = [], label = true, assignable = ['ada'], broken = [] } = {}) {
   const state = { issues: issues.map((issue) => ({ assignees: [], ...issue })), comments: [], label, labelsCreated: 0 }
   const find = (number) => state.issues.find((issue) => issue.number === number)
   const github = {
     rest: {
       issues: {
-        checkUserCanBeAssigned: async ({ assignee }) => { if (!assignable.includes(assignee)) throw notFound() },
+        checkUserCanBeAssigned: async ({ assignee }) => {
+          if (broken.includes(assignee)) throw Object.assign(new Error('Server Error'), { status: 502 })
+          if (!assignable.includes(assignee)) throw notFound()
+        },
         listForRepo: 'listForRepo',
-        getLabel: async () => { if (!state.label) throw notFound() },
-        createLabel: async () => { state.label = true; state.labelsCreated++ },
+        createLabel: async () => {
+          if (state.label) throw Object.assign(new Error('Validation Failed'), { status: 422 })
+          state.label = true
+          state.labelsCreated++
+        },
         create: async ({ title, body, labels, assignees }) => {
           const issue = { number: state.issues.length + 1, state: 'open', title, body, labels, assignees: assignees.map((login) => ({ login })) }
           state.issues.push(issue)
@@ -236,6 +242,14 @@ test('alert: a red run opens an assigned issue with both markers and creates the
   assert.ok(issue.body.includes(MARKER) && issue.body.includes('<!-- last-red-run 12.1 -->'))
   assert.ok(issue.body.includes('[service / unit tests](https://github.com/govengers/holo/actions/runs/7/job/1): failure'))
   assert.ok(!issue.body.includes('lint, vulncheck') && !issue.body.includes('nightly alert'))
+})
+
+test('alert: a label that exists, or an API error on a login, does not cost the alert', async () => {
+  const { state, github } = repository({ label: true, assignable: ['ada', 'grace'], broken: ['grace'] })
+  const log = await alertRun(github, { result: 'failure', number: 12, assignees: 'ada,grace' })
+  assert.equal(state.issues.length, 1)
+  assert.deepEqual(state.issues[0].assignees, [{ login: 'ada' }])
+  assert.deepEqual(log.failed, ['nightly alert: grace could not be checked (502); a red run would reach nobody (CI_ALERT_ASSIGNEES)'])
 })
 
 test('alert: an issue of another workflow or ref is not this one', async () => {

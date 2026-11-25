@@ -587,10 +587,12 @@ checks), permissions `issues: write`, `actions: read`. One `actions/github-scrip
   `<!-- closed-by-run <run number>.<attempt> -->`; runs are compared by number, then attempt.
 - First, before any change: `assignees` is split at commas and trimmed, and every login is checked
   with the assignability endpoint (`GET /repos/{owner}/{repo}/assignees/{login}`); the valid ones
-  are used.
+  are used. A 404 means the login cannot be assigned; any other API error is recorded as a problem
+  of the run (it fails at the end), so a transient error does not cost the night's alert.
 - `result` is `failure`: no such issue: when the newest `closed-by-run` among the closed issues
   with the marker is a newer run than this one, nothing (a late old red run; an issue a person
-  closed carries no `closed-by-run` and does not count); else create the label if missing,
+  closed carries no `closed-by-run` and does not count); else create the label (a 422, the
+  label exists, perhaps created a moment ago by another workflow's first alert, is ignored),
   then the issue, body: the
   run's URL, the ref, the failed jobs of the attempt with their links, the sentence that every
   further red run comments and the first later green run closes it, and both markers. An issue is
@@ -607,6 +609,9 @@ checks), permissions `issues: write`, `actions: read`. One `actions/github-scrip
   nobody (CI_ALERT_ASSIGNEES)`.
 - The failed jobs not readable (no `actions: read`): a warning, and the issue says so; the alert
   still opens or comments.
+- Known limits, said in the README: a late older red run after a newer green run that found no
+  issue opens one, which the next green full run closes; the concurrency group keeps one pending
+  job, so three alerts of one workflow and ref within seconds can drop the middle one.
 
 #### `test/github-scripts.test.mjs` (new), `.github/workflows/actionlint.yml` (changed)
 
