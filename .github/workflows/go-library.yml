@@ -12,6 +12,9 @@
 #   just test-typescript   only with bun-version: TypeScript type checks and bun tests of the library's
 #                      TypeScript sources; Bun is on the PATH for every recipe, so test-e2e may drive it too
 #   with full: true    just test-all and just test-e2e-all instead: everything, uncached (the nightly run)
+#
+# With budget-seconds (standards TST-018) a run that is not full fails when the check job's own steps took longer;
+# the check job then times out after 60 minutes instead of GitHub's default of 360.
 name: Go library
 
 on:
@@ -37,6 +40,10 @@ on:
         description: Bun release to install before the tests; when set, `just test-typescript` runs after the unit tests. Empty (the default) installs no Bun and runs no TypeScript recipe
         type: string
         default: ""
+      budget-seconds:
+        description: budget in seconds for the check job's steps on a run that is not full (TST-018); 0 (the default) sets none
+        type: number
+        default: 0
 
 # Runner: the jobs that run the repository's code take the runs-on label in the caller's CI_RUNNER variable
 # (org or repo; the govengers org sets the fuji self-hosted runners), ubuntu-latest when it is unset. A pull
@@ -49,9 +56,14 @@ jobs:
   check:
     name: lint, test, e2e, vulncheck
     runs-on: ${{ (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest' }}
+    # The bound of a full run; a run that is not full is bounded by the budget step.
+    timeout-minutes: ${{ inputs.budget-seconds > 0 && 60 || 360 }}
     permissions:
       contents: read
     steps:
+      - name: Start the budget clock
+        run: echo "BUDGET_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
 
       - name: Go minor version from go.mod
@@ -84,13 +96,19 @@ jobs:
       # The newest build and test cache saved on main: go test then reruns only the packages whose test binary
       # changed since (TST-014). Only main saves it, so pull requests cannot crowd main's cache out of the
       # repository's cache quota.
-      # It also holds embedded-postgres' downloaded archives, so test runs neither wait for nor fail on Maven.
+      # It also holds embedded-postgres' downloaded archives, so test runs neither wait for nor fail on Maven. The
+      # children of ~/.embedded-postgres-go, not the directory, so postgrestest's directory stays out: it holds the
+      # binaries postgrestest unpacked and its server state, it is a mount on the self-hosted runners, tar cannot
+      # restore over it, and the whole restore fails. The price: a test run that starts postgrestest unpacks the
+      # archive again, about 5 s, on GitHub's runners too. An excluded path inside an included directory would
+      # still land in the archive.
       - uses: actions/cache/restore@v6
         with:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-            ~/.embedded-postgres-go
+            ~/.embedded-postgres-go/*
+            !~/.embedded-postgres-go/postgrestest
           key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.go-cache.outputs.key }}-
@@ -142,7 +160,8 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-            ~/.embedded-postgres-go
+            ~/.embedded-postgres-go/*
+            !~/.embedded-postgres-go/postgrestest
           key: ${{ steps.go-cache.outputs.key }}-${{ github.sha }}
 
       # Every run saves its records (a few bytes each), so the next push of a pull request skips an unchanged suite.
@@ -191,6 +210,25 @@ jobs:
             sandbox/badges/e2e-tests.json
           if-no-files-found: warn
           retention-days: 7
+
+      # The job's own clock, no API call and no new permission; queue time is not counted, a library gates no
+      # deployment.
+      - name: Budget
+        if: ${{ !cancelled() && !inputs.full && inputs.budget-seconds > 0 }}
+        shell: bash
+        env:
+          BUDGET: ${{ inputs.budget-seconds }}
+        run: |
+          # A fraction would make -gt an error inside if, which reads as false: the budget would pass silently.
+          case "$BUDGET" in
+            '' | *[!0-9]*) echo "budget: budget-seconds is $BUDGET, not a whole number of seconds" >&2; exit 1 ;;
+          esac
+          took=$(($(date +%s) - BUDGET_START))
+          echo "The checks took $took s of a budget of $BUDGET s." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$took" -gt "$BUDGET" ]; then
+            echo "budget: the checks took $took s, over the budget of $BUDGET s (TST-018)" >&2
+            exit 1
+          fi
 
   badges:
     name: publish badges

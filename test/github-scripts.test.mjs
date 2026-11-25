@@ -1,0 +1,423 @@
+// Runs the github-script steps of the workflows against fakes of the GitHub API: the hot path verdict of
+// go-service.yml (cap, budgets, re-run completeness) and the issue logic of nightly-alert.yml (run ordering,
+// assignees), and the bash steps that decide the image tags and the check result against fake git and docker.
+// Needs node 20 or newer, bash and yq on the PATH: node --test test/
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const script = (file, query) => execFileSync('yq', [query, file], { encoding: 'utf8' })
+const hotPath = script('.github/workflows/go-service.yml', '.jobs.check.steps[] | select(.name == "Hot path budget") | .with.script')
+const alert = script('.github/workflows/nightly-alert.yml', '.jobs.alert.steps[0].with.script')
+const AsyncFunction = (async () => {}).constructor
+
+// Runs a script as actions/github-script does, with env, a fake client, a context and a clock.
+async function run(source, { env, github, context, now = 0 }) {
+  const log = { failed: [], info: [], warnings: [], summary: '' }
+  const core = {
+    setFailed: (message) => log.failed.push(message),
+    info: (message) => log.info.push(message),
+    warning: (message) => log.warnings.push(message),
+    summary: { addRaw(text) { log.summary += text; return this }, async write() {} },
+  }
+  const saved = { ...process.env }
+  const realNow = Date.now
+  Object.assign(process.env, env)
+  Date.now = () => now
+  try {
+    await new AsyncFunction('github', 'context', 'core', source)(github, context, core)
+  } finally {
+    Date.now = realNow
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
+    Object.assign(process.env, saved)
+  }
+  return log
+}
+
+const notFound = () => Object.assign(new Error('Not Found'), { status: 404 })
+
+// The hot path verdict.
+
+const T0 = Date.parse('2026-11-24T10:00:00Z')
+const at = (s) => new Date(T0 + s * 1000).toISOString()
+const job = (name, startedAt, extra = {}) => ({ name: `service / ${name}`, started_at: at(startedAt), completed_at: at(startedAt + 30), created_at: at(startedAt - 2), runner_name: 'fuji-1', conclusion: 'success', ...extra })
+const success = { result: 'success', outputs: {} }
+const skipped = { result: 'skipped', outputs: {} }
+const prNeeds = { lint: success, test: success, e2e: success, typescript: skipped, recipes: success, browser: success, 'image-build': success, image: skipped }
+
+// now: GitHub's clock (the date header); local: the runner's, which may be skewed.
+function checkRun({ attempts, needs = prNeeds, event = 'pull_request', now, local = now, env = {} }) {
+  const attempt = Math.max(...Object.keys(attempts).map(Number))
+  const github = {
+    rest: { actions: {
+      getWorkflowRunAttempt: async ({ attempt_number: n }) => {
+        if (!attempts[n].readable) throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 })
+        return { headers: { date: new Date(T0 + now * 1000).toUTCString() }, data: { run_started_at: at(attempts[n].started) } }
+      },
+      listJobsForWorkflowRunAttempt: 'listJobsForWorkflowRunAttempt',
+    } },
+    paginate: async (method, { attempt_number: n }) => attempts[n].jobs,
+  }
+  return run(hotPath, {
+    github,
+    context: { repo: { owner: 'govengers', repo: 'holo' }, runId: 7, eventName: event },
+    now: T0 + local * 1000,
+    env: {
+      RUNNER_NAME: 'fuji-check', GITHUB_RUN_ATTEMPT: String(attempt), HOT_PATH_SECONDS: '600', WARM_BUDGET: '0', COLD_BUDGET: '0', MARGIN_PERCENT: '20',
+      TEST_CACHE: 'warm', IMAGE_CACHE: 'warm', NEEDS: JSON.stringify(needs), RECIPES: '["db-check"]', BROWSER_SHARDS: '2', ...env,
+    },
+  })
+}
+
+const allJobs = (start) => ['lint, vulncheck', 'unit tests', 'end-to-end tests', 'just db-check', 'browser journeys (1)', 'browser journeys (2)', 'build the image']
+  .map((name) => job(name, start + 5))
+const checkJob = (start, verdict, results = 'success') => job('check / lint, test, e2e, vulncheck', start, {
+  steps: [{ name: 'Every job passed or was skipped by its input', conclusion: results }, ...(verdict ? [{ name: 'Hot path budget', conclusion: verdict }] : [])],
+})
+
+test('hot path: a value above 600 fails with the org cap', async () => {
+  const log = await checkRun({ attempts: { 1: { started: 0, readable: true, jobs: allJobs(0) } }, now: 100, env: { HOT_PATH_SECONDS: '900' } })
+  assert.deepEqual(log.failed, ['hot path: hot-path-seconds is 900, above the org cap of 600 s (TST-018)'])
+})
+
+test('hot path: unreadable jobs fail with the actions: read hint', async () => {
+  const log = await checkRun({ attempts: { 1: { started: 0, readable: false, jobs: [] } }, now: 100 })
+  assert.match(log.failed[0], /^hot path: the run's jobs are not readable .*; the caller must grant actions: read$/)
+})
+
+test('hot path: a pull request is capped 60 s below a push', async () => {
+  const attempts = { 1: { started: 0, readable: true, jobs: allJobs(0) } }
+  assert.deepEqual((await checkRun({ attempts, now: 540 })).failed, [])
+  assert.deepEqual((await checkRun({ attempts, now: 541 })).failed, ['hot path: 541 s, over the cap of 540 s (TST-018)'])
+  assert.deepEqual((await checkRun({ attempts, now: 600, event: 'push' })).failed, [])
+  assert.deepEqual((await checkRun({ attempts, now: 601, event: 'push' })).failed, ['hot path: 601 s, over the cap of 600 s (TST-018)'])
+})
+
+test('hot path: the early warning of the run kind warns and never fails; the cap fails', async () => {
+  const attempts = { 1: { started: 0, readable: true, jobs: allJobs(0) } }
+  const budgets = { WARM_BUDGET: '300', COLD_BUDGET: '480' }
+  const within = await checkRun({ attempts, now: 360, env: budgets })
+  assert.deepEqual([within.failed, within.warnings], [[], []])
+  const over = await checkRun({ attempts, now: 361, env: budgets })
+  assert.deepEqual(over.failed, [])
+  assert.deepEqual(over.warnings, ['budget: the pipeline took 361 s, over its warm budget of 300 s plus 20 %; a warning, the cap of 540 s is the limit'])
+  assert.match(over.summary, /warm budget 300 s, warning above 360 s \(\+20 %\): over it, a warning\./)
+  const cold = await checkRun({ attempts, now: 361, env: { ...budgets, IMAGE_CACHE: 'cold' } })
+  assert.deepEqual([cold.failed, cold.warnings], [[], []])
+  const both = await checkRun({ attempts, now: 590, env: { ...budgets, TEST_CACHE: 'cold' } })
+  assert.deepEqual(both.failed, ['hot path: 590 s, over the cap of 540 s (TST-018)'])
+  assert.deepEqual(both.warnings, ['budget: the pipeline took 590 s, over its cold budget of 480 s plus 20 %; a warning, the cap of 540 s is the limit'])
+})
+
+test('hot path: the summary lists runner, queue and run seconds, a dash for a carried job', async () => {
+  const jobs = [...allJobs(0), job('unit tests', 10, { created_at: at(20) })]
+  const log = await checkRun({ attempts: { 1: { started: 0, readable: true, jobs } }, now: 200 })
+  assert.match(log.summary, /\| service \/ lint, vulncheck \| fuji-1 \| 2 \| 30 \|/)
+  assert.match(log.summary, /\| service \/ unit tests \| fuji-1 \| - \| 30 \|/)
+  assert.match(log.summary, /\| \*\*hot path\*\* \(warm caches, attempt 1\) \| \| \| \*\*200\*\* \|/)
+})
+
+test('hot path: a re-run in which every expected job ran again is judged anew', async () => {
+  const attempts = {
+    1: { started: 0, readable: true, jobs: [...allJobs(0), checkJob(400, 'failure')] },
+    2: { started: 1000, readable: true, jobs: allJobs(1000) },
+  }
+  assert.deepEqual((await checkRun({ attempts, now: 1300 })).failed, [])
+  assert.deepEqual((await checkRun({ attempts, now: 1600 })).failed, ['hot path: 600 s, over the cap of 540 s (TST-018)'])
+})
+
+test('hot path: a partial re-run repeats the verdict of the attempt before', async () => {
+  // Browser shard 2/2 carried over with its old timestamps; on the next attempt shard 1/2 is missing.
+  const carried = allJobs(1000).map((j) => (j.name.endsWith('(2)') ? job('browser journeys (2)', 5) : j))
+  const missing = allJobs(1000).filter((j) => !j.name.endsWith('(1)'))
+  const failedJobs = 'hot path: attempt 1 had failed jobs, so its time is no measurement; re-run all jobs'
+  for (const [jobs, verdict, results, expected] of [
+    [carried, 'success', 'success', []],
+    [missing, 'success', 'success', []],
+    [carried, 'success', 'failure', [failedJobs]],
+    [missing, 'success', 'failure', [failedJobs]],
+    [carried, 'failure', 'success', ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'failure', 'failure', ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'skipped', 'failure', ['hot path: no verdict of a complete attempt; re-run all jobs']],
+    [carried, 'cancelled', 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
+    [carried, undefined, 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
+  ]) {
+    const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), checkJob(400, verdict, results)] }, 2: { started: 1000, readable: true, jobs } }
+    const log = await checkRun({ attempts, now: 1100 })
+    assert.deepEqual(log.failed, expected, `earlier verdict ${verdict}, results ${results}`)
+    if (expected.length === 0) assert.ok(log.info.includes('hot path: earlier verdict stands'))
+  }
+})
+
+test('hot path: expected jobs follow the needs, a skipped need expects nothing', async () => {
+  // On a push the image job is expected too; here it did not run again.
+  const needs = { ...prNeeds, image: success }
+  const attempts = { 1: { started: 0, readable: true, jobs: [checkJob(400, 'failure')] }, 2: { started: 1000, readable: true, jobs: allJobs(1000) } }
+  assert.match((await checkRun({ attempts, needs, now: 1100, event: 'push' })).failed[0], /^hot path: attempt 1 broke the cap/)
+  // Without recipes and browser jobs, the remaining jobs are complete.
+  const fewer = { ...prNeeds, recipes: skipped, browser: skipped }
+  const jobs = allJobs(1000).filter((j) => !/just|browser/.test(j.name))
+  const complete = { 1: { started: 0, readable: true, jobs: [checkJob(400, 'failure')] }, 2: { started: 1000, readable: true, jobs } }
+  assert.deepEqual((await checkRun({ attempts: complete, needs: fewer, now: 1100 })).failed, [])
+})
+
+test('hot path: the verdict takes GitHub\'s clock, not a skewed runner clock', async () => {
+  const attempts = { 1: { started: 0, readable: true, jobs: allJobs(0) } }
+  assert.deepEqual((await checkRun({ attempts, now: 500, local: 900 })).failed, [])
+  assert.deepEqual((await checkRun({ attempts, now: 600, local: 100 })).failed, ['hot path: 600 s, over the cap of 540 s (TST-018)'])
+})
+
+test('hot path: with two calls of the workflow, only this call\'s jobs and verdict count', async () => {
+  const other = (jobs) => jobs.map((j) => ({ ...j, name: j.name.replace(/^service \//, 'other /') }))
+  const self = job('check / lint, test, e2e, vulncheck', 1100, { status: 'in_progress', runner_name: 'fuji-check', completed_at: null })
+  // This call's shard 2 did not run again; the other call's did.
+  const jobs = [...other(allJobs(1000)), ...allJobs(1000).filter((j) => !j.name.endsWith('(2)')), self]
+  const earlier = [...other([checkJob(400, 'success')]), checkJob(400, 'failure')]
+  const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), ...earlier] }, 2: { started: 1000, readable: true, jobs } }
+  assert.deepEqual((await checkRun({ attempts, now: 1100 })).failed,
+    ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs'])
+  // Every job of this call ran again: judged anew, whatever the other call did.
+  const complete = { ...attempts, 2: { started: 1000, readable: true, jobs: [...allJobs(1000), self] } }
+  assert.deepEqual((await checkRun({ attempts: complete, now: 1100 })).failed, [])
+})
+
+// The nightly alert.
+
+const REF = 'govengers/holo/.github/workflows/ci.yml@refs/heads/main'
+const MARKER = `<!-- nightly-alert ${REF} -->`
+
+function repository({ issues = [], label = true, assignable = ['ada'], broken = [] } = {}) {
+  const state = { issues: issues.map((issue) => ({ assignees: [], ...issue })), comments: [], label, labelsCreated: 0 }
+  const find = (number) => state.issues.find((issue) => issue.number === number)
+  const github = {
+    rest: {
+      issues: {
+        checkUserCanBeAssigned: async ({ assignee }) => {
+          if (broken.includes(assignee)) throw Object.assign(new Error('Server Error'), { status: 502 })
+          if (!assignable.includes(assignee)) throw notFound()
+        },
+        listForRepo: 'listForRepo',
+        createLabel: async () => {
+          if (state.label) throw Object.assign(new Error('Validation Failed'), { status: 422 })
+          state.label = true
+          state.labelsCreated++
+        },
+        create: async ({ title, body, labels, assignees }) => {
+          const issue = { number: state.issues.length + 1, state: 'open', title, body, labels, assignees: assignees.map((login) => ({ login })) }
+          state.issues.push(issue)
+          return { data: { ...issue } }
+        },
+        createComment: async ({ issue_number, body }) => { state.comments.push({ issue: issue_number, body }) },
+        update: async ({ issue_number, ...changes }) => { Object.assign(find(issue_number), changes); return { data: { ...find(issue_number) } } },
+        addAssignees: async ({ issue_number, assignees }) => {
+          find(issue_number).assignees.push(...assignees.map((login) => ({ login })))
+          return { data: { ...find(issue_number) } }
+        },
+      },
+      actions: { listJobsForWorkflowRunAttempt: 'listJobsForWorkflowRunAttempt' },
+    },
+    paginate: async (method, params) => {
+      if (method === 'listJobsForWorkflowRunAttempt') {
+        return [{ name: 'service / unit tests', conclusion: 'failure', html_url: 'https://github.com/govengers/holo/actions/runs/7/job/1' }, { name: 'service / lint, vulncheck', conclusion: 'success' }, { name: 'alert / nightly alert', conclusion: null }]
+      }
+      return state.issues.filter((issue) => issue.state === params.state).map((issue) => ({ ...issue }))
+    },
+  }
+  return { state, github }
+}
+
+const alertRun = (github, { result, number, attempt = 1, assignees = 'ada' }) => run(alert, {
+  github,
+  context: { repo: { owner: 'govengers', repo: 'holo' }, runId: 7, runNumber: number, serverUrl: 'https://github.com' },
+  env: { RESULT: result, ASSIGNEES: assignees, WORKFLOW: 'CI', WORKFLOW_REF: REF, REF_NAME: 'main', GITHUB_RUN_ATTEMPT: String(attempt) },
+})
+const openIssue = (lastRed, extra = {}) => ({ number: 1, state: 'open', body: `red\n${MARKER}\n<!-- last-red-run ${lastRed} -->`, assignees: [{ login: 'ada' }], ...extra })
+
+test('alert: a red run opens an assigned issue with both markers and creates the label', async () => {
+  const { state, github } = repository({ label: false })
+  const log = await alertRun(github, { result: 'failure', number: 12 })
+  assert.deepEqual(log.failed, [])
+  assert.equal(state.labelsCreated, 1)
+  const [issue] = state.issues
+  assert.equal(issue.title, 'CI is red on main')
+  assert.deepEqual(issue.labels, ['nightly-ci'])
+  assert.deepEqual(issue.assignees, [{ login: 'ada' }])
+  assert.ok(issue.body.includes(MARKER) && issue.body.includes('<!-- last-red-run 12.1 -->'))
+  assert.ok(issue.body.includes('[service / unit tests](https://github.com/govengers/holo/actions/runs/7/job/1): failure'))
+  assert.ok(!issue.body.includes('lint, vulncheck') && !issue.body.includes('nightly alert'))
+})
+
+test('alert: a label that exists, or an API error on a login, does not cost the alert', async () => {
+  const { state, github } = repository({ label: true, assignable: ['ada', 'grace'], broken: ['grace'] })
+  const log = await alertRun(github, { result: 'failure', number: 12, assignees: 'ada,grace' })
+  assert.equal(state.issues.length, 1)
+  assert.deepEqual(state.issues[0].assignees, [{ login: 'ada' }])
+  assert.deepEqual(log.failed, ['nightly alert: grace could not be checked (502); a red run would reach nobody (CI_ALERT_ASSIGNEES)'])
+})
+
+test('alert: an issue of another workflow or ref is not this one', async () => {
+  const other = openIssue('3.1', { body: 'red\n<!-- nightly-alert govengers/holo/.github/workflows/ci.yml@refs/heads/probe -->\n<!-- last-red-run 3.1 -->' })
+  const { state, github } = repository({ issues: [other] })
+  await alertRun(github, { result: 'failure', number: 12 })
+  assert.equal(state.issues.length, 2)
+  await alertRun(github, { result: 'success', number: 13 })
+  assert.equal(state.issues[0].state, 'open')
+  assert.equal(state.issues[1].state, 'closed')
+})
+
+test('alert: a further red run comments, raises last-red-run only when newer, and adds missing assignees', async () => {
+  const { state, github } = repository({ issues: [openIssue('12.1', { assignees: [] })] })
+  await alertRun(github, { result: 'failure', number: 14 })
+  assert.equal(state.comments.length, 1)
+  assert.match(state.comments[0].body, /^Red again: https:\/\/github\.com\/govengers\/holo\/actions\/runs\/7\/attempts\/1/)
+  assert.ok(state.issues[0].body.includes('<!-- last-red-run 14.1 -->'))
+  assert.deepEqual(state.issues[0].assignees, [{ login: 'ada' }])
+  await alertRun(github, { result: 'failure', number: 13 })
+  assert.equal(state.comments.length, 2)
+  assert.ok(state.issues[0].body.includes('<!-- last-red-run 14.1 -->'))
+})
+
+test('alert: a newer green run closes, a re-run of the red run too, an older one leaves it open', async () => {
+  for (const [number, attempt, closes] of [[13, 1, true], [12, 2, true], [12, 1, false], [11, 3, false]]) {
+    const { state, github } = repository({ issues: [openIssue('12.1')] })
+    const log = await alertRun(github, { result: 'success', number, attempt })
+    assert.deepEqual(log.failed, [])
+    assert.equal(state.issues[0].state, closes ? 'closed' : 'open', `run ${number}.${attempt}`)
+    if (closes) {
+      assert.equal(state.issues[0].state_reason, 'completed')
+      assert.ok(state.issues[0].body.includes(`<!-- closed-by-run ${number}.${attempt} -->`))
+      assert.match(state.comments[0].body, /^green again: /)
+    } else {
+      assert.equal(state.comments.length, 0)
+    }
+  }
+})
+
+test('alert: a late old red run does not reopen what a newer green run closed', async () => {
+  const closed = { number: 1, state: 'closed', body: `red\n${MARKER}\n<!-- last-red-run 12.1 -->\n<!-- closed-by-run 14.1 -->` }
+  const late = repository({ issues: [closed] })
+  await alertRun(late.github, { result: 'failure', number: 13 })
+  assert.equal(late.state.issues.length, 1)
+  const fresh = repository({ issues: [closed] })
+  await alertRun(fresh.github, { result: 'failure', number: 15 })
+  assert.equal(fresh.state.issues.length, 2)
+})
+
+test('alert: cancelled and skipped results change nothing', async () => {
+  for (const result of ['cancelled', 'skipped']) {
+    const { state, github } = repository({ issues: [openIssue('12.1')] })
+    const log = await alertRun(github, { result, number: 13 })
+    assert.deepEqual(log.failed, [])
+    assert.equal(state.issues[0].state, 'open')
+    assert.equal(state.comments.length, 0)
+  }
+})
+
+test('alert: nobody to assign fails every run, red or green, after the issue is opened', async () => {
+  const empty = repository()
+  const red = await alertRun(empty.github, { result: 'failure', number: 12, assignees: ' ' })
+  assert.equal(empty.state.issues.length, 1)
+  assert.deepEqual(red.failed, ['nightly alert: no login in assignees can be assigned; #1 has no assignee; a red run would reach nobody (CI_ALERT_ASSIGNEES)'])
+  const typo = await alertRun(repository().github, { result: 'success', number: 12, assignees: 'ada, adaa' })
+  assert.deepEqual(typo.failed, ['nightly alert: adaa cannot be assigned in govengers/holo; a red run would reach nobody (CI_ALERT_ASSIGNEES)'])
+  // The next red run with the variable restored assigns the issue.
+  const restored = await alertRun(empty.github, { result: 'failure', number: 13, assignees: 'ada' })
+  assert.deepEqual(restored.failed, [])
+  assert.deepEqual(empty.state.issues[0].assignees, [{ login: 'ada' }])
+})
+
+// The bash steps of go-service.yml, run as GitHub runs them, with git and docker faked on the PATH.
+
+const promote = script('.github/workflows/go-service.yml', '.jobs.image.steps[] | select(.id == "promote") | .run')
+const results = script('.github/workflows/go-service.yml', '.jobs.check.steps[] | select(.name == "Every job passed or was skipped by its input") | .run')
+
+function bash(source, env, fakes = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'step-'))
+  for (const [name, body] of Object.entries(fakes)) {
+    writeFileSync(join(dir, name), `#!/usr/bin/env bash\n${body}\n`)
+    chmodSync(join(dir, name), 0o755)
+  }
+  writeFileSync(join(dir, 'step.sh'), source)
+  const output = join(dir, 'output')
+  writeFileSync(output, '')
+  const run = spawnSync('bash', ['-e', join(dir, 'step.sh')], {
+    encoding: 'utf8',
+    env: { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_OUTPUT: output, DIR: dir, ...env },
+  })
+  const calls = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n') : []
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, output: readFileSync(output, 'utf8'), calls }
+}
+
+const git = 'if [ "$HEAD" = fail ]; then echo "fatal: unable to access" >&2; exit 128; fi; printf "%s\\trefs/heads/main\\n" "$HEAD"'
+// imagetools create logs its arguments and writes the metadata file buildx writes.
+const docker = `echo "$*" >> "$DIR/calls"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --metadata-file ]; then printf '{\\n  "containerimage.descriptor": {\\n    "mediaType": "application/vnd.oci.image.index.v1+json",\\n    "digest": "%s",\\n    "size": 1609\\n  },\\n  "image.name": "x"\\n}' "$CREATED" > "$2"; fi
+  shift
+done`
+const SHA = 'abc1234def5678abc1234def5678abc1234def56'
+const CREATED = `sha256:${'c0ffee42'.repeat(8)}`
+const branchTags = `ghcr.io/govengers/holo:main\nghcr.io/govengers/holo:sha-abc1234`
+const promoteEnv = (env) => ({ IMAGE: 'ghcr.io/govengers/holo', DIGEST: 'sha256:built', GITHUB_SHA: SHA, CREATED, REF_TYPE: 'branch', BRANCH: 'main', TAGS: branchTags, HEAD: SHA, ...env })
+
+test('promote: the branch head gets both tags, and the output is the digest create wrote', () => {
+  const run = bash(promote, promoteEnv({}), { git, docker })
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(run.calls.length, 1)
+  assert.match(run.calls[0], /^buildx imagetools create --metadata-file \S+\/promote\.json --tag ghcr\.io\/govengers\/holo:main --tag ghcr\.io\/govengers\/holo:sha-abc1234 ghcr\.io\/govengers\/holo@sha256:built$/)
+  assert.equal(run.output, `digest=${CREATED}\n`)
+})
+
+test('promote: a moved or deleted branch head keeps the branch tag where it is', () => {
+  for (const [head, shown] of [['f00ba4f00ba4f00ba4f00ba4f00ba4f00ba4f00b', 'f00ba4f00ba4f00ba4f00ba4f00ba4f00ba4f00b'], ['', 'gone']]) {
+    const run = bash(promote, promoteEnv({ HEAD: head }), { git, docker })
+    assert.equal(run.status, 0, run.stderr)
+    assert.ok(run.stdout.includes(`ghcr.io/govengers/holo:main not moved: the branch head is ${shown}, this run built ${SHA}`))
+    assert.match(run.calls[0], / --tag ghcr\.io\/govengers\/holo:sha-abc1234 ghcr\.io\/govengers\/holo@sha256:built$/)
+    assert.ok(!run.calls[0].includes(':main'))
+  }
+})
+
+test('promote: a failing ls-remote writes no tag; a tag ref writes every tag; no digest in the metadata fails', () => {
+  const failing = bash(promote, promoteEnv({ HEAD: 'fail' }), { git, docker })
+  assert.notEqual(failing.status, 0)
+  assert.deepEqual(failing.calls, [])
+  const tags = 'ghcr.io/govengers/holo:1.2.3\nghcr.io/govengers/holo:1.2\nghcr.io/govengers/holo:latest\nghcr.io/govengers/holo:sha-abc1234'
+  const release = bash(promote, promoteEnv({ REF_TYPE: 'tag', BRANCH: 'v1.2.3', TAGS: tags, HEAD: 'fail' }), { git, docker })
+  assert.equal(release.status, 0, release.stderr)
+  assert.match(release.calls[0], /--tag ghcr\.io\/govengers\/holo:1\.2\.3 --tag ghcr\.io\/govengers\/holo:1\.2 --tag ghcr\.io\/govengers\/holo:latest --tag ghcr\.io\/govengers\/holo:sha-abc1234 /)
+  const empty = bash(promote, promoteEnv({ CREATED: '' }), { git, docker })
+  assert.notEqual(empty.status, 0)
+  assert.match(empty.stderr, /promote: imagetools create wrote no digest to its metadata/)
+})
+
+test('check: a failed or cancelled job fails, a skip passes only where no input or event enables the job', () => {
+  const off = { EXPECT_BROWSER: 'false', EXPECT_IMAGE_BUILD: 'false', EXPECT_IMAGE: 'false', BROWSER: 'skipped', IMAGE_BUILD: 'skipped', IMAGE: 'skipped' }
+  // Without the new inputs: the five jobs of v1, then browser, image-build and the image job's stand-in.
+  assert.equal(bash(results, { ...off, RESULTS: 'success success success skipped success skipped skipped skipped' }).status, 0)
+  assert.equal(bash(results, { ...off, RESULTS: 'success failure success skipped success skipped skipped skipped' }).status, 1)
+  assert.equal(bash(results, { ...off, RESULTS: 'success success cancelled skipped success skipped skipped skipped' }).status, 1)
+  // Hot path mode on a push: the image job is enabled, so its skip (a cancelled run) fails check.
+  const push = { ...off, EXPECT_BROWSER: 'true', EXPECT_IMAGE_BUILD: 'true', EXPECT_IMAGE: 'true', BROWSER: 'success', IMAGE_BUILD: 'success' }
+  assert.equal(bash(results, { ...push, IMAGE: 'success', RESULTS: 'success success success skipped success success success success' }).status, 0)
+  const skipped = bash(results, { ...push, IMAGE: 'skipped', RESULTS: 'success success success skipped success success success skipped' })
+  assert.equal(skipped.status, 1)
+  assert.match(skipped.stderr, /check: build, attest and push the image is skipped, but the inputs and the event enable it/)
+  const noBrowser = bash(results, { ...push, BROWSER: 'skipped', IMAGE: 'success', RESULTS: 'success success success skipped success skipped success success' })
+  assert.match(noBrowser.stderr, /check: browser journeys is skipped/)
+})
+
+const libraryBudget = script('.github/workflows/go-library.yml', '.jobs.check.steps[] | select(.name == "Budget") | .run')
+
+test('library budget: over the budget fails, a fraction fails instead of passing silently', () => {
+  const start = String(Math.floor(Date.now() / 1000) - 5)
+  const budget = (value) => bash(libraryBudget, { BUDGET: value, BUDGET_START: start, GITHUB_STEP_SUMMARY: '/dev/null' })
+  assert.equal(budget('300').status, 0)
+  assert.match(budget('1').stderr, /^budget: the checks took \d+ s, over the budget of 1 s \(TST-018\)$/m)
+  const fraction = budget('0.5')
+  assert.equal(fraction.status, 1)
+  assert.match(fraction.stderr, /budget: budget-seconds is 0\.5, not a whole number of seconds/)
+})
