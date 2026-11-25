@@ -483,9 +483,10 @@ Details, in the order of the file:
      `git ls-remote origin "refs/heads/<branch>"` and drops the branch tag from the list when the
      answer is not `GITHUB_SHA`, with the log line `<image>:<branch> not moved: the branch head is
      <sha>, this run built <sha>`. Then `docker buildx imagetools create` with one `-t` per remaining tag and the source
-     `${{ inputs.image }}@${{ needs.image-build.outputs.digest }}`, and it writes the digest the
-     `sha-` tag resolves to (`docker buildx imagetools inspect --format '{{.Manifest.Digest}}'`,
-     the plain value, no JSON quoting) to its `digest` output.
+     `${{ inputs.image }}@${{ needs.image-build.outputs.digest }}`, and it writes the digest that
+     create wrote (`--metadata-file`, buildx 0.32 or newer; the fuji runners have 0.38.1) to its
+     `digest` output. Not a read-back of the `sha-` tag: a `v*` tag run of the same commit writes
+     that tag too, with another `VERSION` and digest, in another concurrency group.
    - attestation: `subject-digest: ${{ steps.build.outputs.digest || steps.promote.outputs.digest }}`.
    The concurrency group stays on `image`.
 6. **`check` job.** `needs: [lint, test, e2e, typescript, recipes, browser, image-build, image]`,
@@ -988,7 +989,7 @@ Dependencies, to be tracked as an infrastructure task:
 | a commit superseded before its tag job never carries the branch tag | by design (section 5): the head that follows carries it; deploys by `sha-` tag are unaffected |
 | `check` now holds the caller's token instead of none | it checks nothing out and runs only the workflow's two steps, like `budget` since design S3 |
 | the attestation of a tagged digest is unproven until a public service uses hot path mode | V9; the step is today's, only its digest source differs |
-| `imagetools create` writes an index with another digest than the one built | the attestation takes the digest the tag resolves to; V9 compares them |
+| `imagetools create` writes an index with another digest than the one built | the attestation takes the digest create wrote; V9 compares it with the tags |
 | untagged image versions of failed runs pile up in ghcr.io | harmless for deploys; cleanup is a follow-up |
 | the derivation check now misses a foundation change that only breaks the derived application until the nightly | accepted with the order; the nightly alert is what makes it sound |
 | the vulnerability scan misses a newly reachable function until the nightly | accepted with the order (section 4); said in TCH-008 |

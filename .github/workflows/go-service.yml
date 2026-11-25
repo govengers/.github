@@ -913,7 +913,8 @@ jobs:
 
       # Hot path mode: tag the digest the image-build job pushed. Only the branch head moves the branch tag, so a
       # re-run of an older run cannot point :main back (design S16); the sha- tag is always written. The output is
-      # the digest that tag resolves to, which the attestation signs.
+      # the digest this create wrote, which the attestation signs: not a read-back of the sha- tag, which a v* tag
+      # run of the same commit writes too, with another digest (--metadata-file: buildx 0.32 or newer).
       - id: promote
         name: tag the digest built beside the checks
         if: needs.image-build.result == 'success'
@@ -937,9 +938,13 @@ jobs:
             fi
             args+=(--tag "$tag")
           done <<<"$TAGS"
-          docker buildx imagetools create "${args[@]}" "$IMAGE@$DIGEST"
-          sha_tag=$(grep -m 1 ':sha-' <<<"$TAGS")
-          echo "digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$sha_tag")" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/promote.json" "${args[@]}" "$IMAGE@$DIGEST"
+          digest=$(sed -n 's/.*"digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' "$RUNNER_TEMP/promote.json" | head -n 1)
+          if [ -z "$digest" ]; then
+            echo "promote: imagetools create wrote no digest to its metadata" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       # Consumers verify the image came from this workflow:
       # gh attestation verify oci://<image>@<digest> --repo <owner>/<repo>
