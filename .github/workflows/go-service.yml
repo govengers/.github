@@ -492,8 +492,12 @@ jobs:
     steps:
       - *checkout
 
+      # cleanup: false, the runners are ephemeral: removing the builder nobody reuses cost 46 s on Docker in
+      # Docker (holo run 45623156737).
       - id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          cleanup: false
 
       - if: github.event_name == 'push'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
