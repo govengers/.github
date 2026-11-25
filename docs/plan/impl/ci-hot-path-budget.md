@@ -92,11 +92,12 @@ it to a tarball, so compile and compression are inside its measurement.
 
 **Blocking.** The verdict is a step of `check`, the one check branch protection requires. A pull
 request over the cap cannot merge; no new required check is needed, and no job can be skipped
-around it. That holds where the repository can require the check: the cap blocks a merge only in a
-public repository or a private one on a paid plan. In a private repository on GitHub's free plan
-branch protection and rulesets are unavailable (the API answers 403 "Upgrade to GitHub Pro or make
-this repository public"), so the red check is advisory and the merge rule rests on whoever merges
-(the owner's decision of 25.11.2026: documented, no workaround). On the default branch the cap cannot gate the push it measures: the image is out when
+around it. Where the repository cannot require checks (a private repository on GitHub's free plan
+has no branch protection), the red check is advisory, and nobody merges a pull request whose check
+is red. The cap blocks a merge only in a public repository or a private one on a paid plan; on the
+free plan branch protection and rulesets answer 403 "Upgrade to GitHub Pro or make this repository
+public" (the owner's decision of 25.11.2026: documented, no workaround; TST-018 says the same).
+On the default branch the cap cannot gate the push it measures: the image is out when
 the verdict falls, the red run is the alarm. A re-run of some jobs repeats the earlier verdict;
 only an attempt in which every job ran again is measured anew, and without an earlier verdict a
 partial re-run fails. The cap judges a run as it ran, with its record skips, like any push of an unchanged tree: a
@@ -299,8 +300,9 @@ the server binary in the key embeds this run's frontend, on a fresh checkout as 
 the binaries the journeys execute (`browser_binaries`: the server and every Go program the harness
 runs, the database launcher included, built reproducibly, so Go code, its dependencies and what it
 embeds are in the key through them), every file that exists, that git tracks or does not ignore,
-and that is not below `browser_unaffected`, plus every path a spec claims even below it (path,
-content and executable bit), the Bun version, the selection and `SHARD`. Each part of the key is
+and that is not below `browser_unaffected`, plus every path a spec claims even below it, read as
+`browser-select` reads claims (carriage return and one trailing slash dropped): path, content,
+executable bit, and every symlink's target; the Bun version, the selection and `SHARD`. Each part of the key is
 computed on its own; an input that cannot be hashed fails the run instead of leaving the key
 shorter. So `browser_unaffected` may hold only Go code and embedded files (the
 binaries fingerprint them) and files no journey process reads. A record is read and written only
@@ -937,6 +939,11 @@ before.
   without it.
 - **`go.mod`, `go.sum`**: `github.com/gorilla/websocket` bumped to
   `v1.5.4-0.20240701034025-d67f41855da4` (GO-2026-6278, red on main too).
+- **`cmd/server/main.go`, `cmd/server/application.go`**: `WORKER_POLL_INTERVAL` (default 1 s,
+  also a floor; the e2e harness sets 50 ms): the e2e tests waited on the job queue's 1 s idle poll
+  (holo design H126). `docs/deployment.md` names the variable.
+- **`test/e2e/main_test.go`**: the e2e harness sets `WORKER_POLL_INTERVAL=50ms` and keeps the
+  server's `STORAGE_PATH` in RAM.
 - **Docs**: `docs/testing.md` (requirements line, Budgets "Per pipeline", Rules 7, 8 and 12, the
   CI table, Measured: the new runs of WP4), `docs/design.md` (a new decision, H124, that replaces H61's last paragraph: frontend as TypeScript job plus browser job, image
   built on pull requests; H117: `image-check` stays local), `docs/dependencies.md` (the rows on
@@ -1094,7 +1101,9 @@ govengers/holo
 ├── .github/workflows/ci.yml                    changed (WP3a pin, WP3b)
 ├── justfile                                    changed
 ├── docker/server.Dockerfile                    changed
-├── cmd/server/application.go                   changed (64 requests in flight per socket)
+├── cmd/server/main.go                          changed (WORKER_POLL_INTERVAL)
+├── cmd/server/application.go                   changed (64 requests in flight per socket, WORKER_POLL_INTERVAL)
+├── test/e2e/main_test.go                       changed (50 ms poll, STORAGE_PATH in RAM)
 ├── go.mod, go.sum                              changed (gorilla/websocket)
 ├── ui/playwright.config.ts                     changed (comment)
 ├── ui/e2e/helpers.ts                           changed (ownPerson)
@@ -1110,7 +1119,7 @@ govengers/holo
 ├── docs/testing.md                             changed
 ├── docs/design.md                              changed
 ├── docs/dependencies.md                        changed
-├── docs/deployment.md                          changed
+├── docs/deployment.md                          changed (pull requests build the image, WORKER_POLL_INTERVAL)
 └── docs/upgrading/0002-ci-hot-path.md          new
 ```
 
