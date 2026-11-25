@@ -132,11 +132,13 @@ jobs:
           cache: false
 
       # One cache per job, since the jobs build different things (race tests, the e2e coverage build, lint): the
-      # Go build and test cache, the module cache, embedded PostgreSQL's download and unpacked binaries and
-      # golangci-lint's cache. The children of ~/.embedded-postgres-go, not the directory: an excluded path inside
-      # an included directory still lands in the archive, and a service's own test server keeps its data (and a
-      # postmaster.pid that refuses the next start) under a *-test directory, postgrestest under postgrestest (a
-      # mount on the self-hosted runners, which tar cannot restore over: the whole restore fails). The key names
+      # Go build and test cache, the module cache, embedded PostgreSQL's downloads and the binaries unpacked outside
+      # postgrestest, and golangci-lint's cache. The children of ~/.embedded-postgres-go, not the directory: an
+      # excluded path inside an included directory still lands in the archive, and a service's own test server
+      # keeps its data (and a postmaster.pid that refuses the next start) under a *-test directory. postgrestest
+      # keeps its unpacked binaries and its server state under postgrestest, a mount on the self-hosted runners that
+      # tar cannot restore over (the whole restore fails), so it stays out; the price is that every job starting
+      # postgrestest unpacks the archive again, about 5 s, on GitHub's runners too. The key names
       # the installed patch: a cache of another toolchain holds no usable build or test result, so its run is cold
       # (and saves).
       - &cache-paths

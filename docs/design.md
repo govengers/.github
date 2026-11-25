@@ -22,8 +22,9 @@ its single job: a library's pipeline is short, and one runner saves a cache rest
 
 The jobs build different things (race-instrumented tests, the coverage build of the e2e suite, lint), so
 each restores and saves its own cache (`go-<job>-<os>-<go release>-<go.sum hash>-<sha>`): the Go build and
-test cache, the module cache, the children of `~/.embedded-postgres-go` except `postgrestest` (its server
-state, a mount on the self-hosted runners that tar cannot restore over) and `*-test` (a service's
+test cache, the module cache, the children of `~/.embedded-postgres-go` except `postgrestest` (its unpacked
+binaries and server state, a mount on the self-hosted runners that tar cannot restore over; every job that
+starts postgrestest unpacks the archive again, about 5 s) and `*-test` (a service's
 running test server keeps its data, and a `postmaster.pid` that refuses the next start, under such a
 directory; an excluded path inside an included directory would still land in the archive) and
 golangci-lint's cache. Pushes to the default branch save; a pull request saves only when it restored

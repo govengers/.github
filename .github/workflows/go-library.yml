@@ -97,9 +97,11 @@ jobs:
       # changed since (TST-014). Only main saves it, so pull requests cannot crowd main's cache out of the
       # repository's cache quota.
       # It also holds embedded-postgres' downloaded archives, so test runs neither wait for nor fail on Maven. The
-      # children of ~/.embedded-postgres-go, not the directory, so postgrestest's server state stays out: it is a
-      # mount on the self-hosted runners, tar cannot restore over it, and the whole restore fails. An excluded path
-      # inside an included directory would still land in the archive.
+      # children of ~/.embedded-postgres-go, not the directory, so postgrestest's directory stays out: it holds the
+      # binaries postgrestest unpacked and its server state, it is a mount on the self-hosted runners, tar cannot
+      # restore over it, and the whole restore fails. The price: a test run that starts postgrestest unpacks the
+      # archive again, about 5 s, on GitHub's runners too. An excluded path inside an included directory would
+      # still land in the archive.
       - uses: actions/cache/restore@v6
         with:
           path: |

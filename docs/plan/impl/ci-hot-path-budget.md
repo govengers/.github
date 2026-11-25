@@ -566,7 +566,17 @@ Details, in the order of the file:
    when their input is off; branch protection is not affected, since it requires only `check`.
    The recipes see two more environment variables: `BASE_SHA` in the recipe jobs, `RECORDS_JOB`
    in the lint and recipe jobs, harmless unless a recipe already reads a variable of that name.
+   And the Go cache path list changed (item 10), which changes the cache version: one cold run
+   per job after the pin; a library's pull requests, which never save, stay cold until its next
+   push to the default branch.
 9. **Header comment** of the file: the hot path mode, the three inputs, `BASE_SHA`, `SHARD`.
+10. **Go cache paths** (added in the review of WP1, commit a2bf912, in both workflows): the
+    children of `~/.embedded-postgres-go` without `postgrestest`. That directory holds
+    postgrestest's unpacked PostgreSQL binaries and its server state; on the fuji runners it is a
+    tmpfs mount since 25.11.2026, tar cannot restore over it (`Cannot utime: Operation not
+    permitted`), and the whole restore failed, so every job ran cold. The price: every job that
+    starts postgrestest unpacks the archive again, about 5 s, on GitHub's runners too.
+    `go-library.yml` caches the children instead of the directory for the same exclusion.
 
 #### `.github/workflows/go-library.yml` (changed)
 
