@@ -110,7 +110,10 @@ is measured again, and the nightly full run bounds every job at 60 minutes (the 
 25.11.2026, review of WP1).
 
 **Early warning.** `budget-warm-seconds` 300 and `budget-cold-seconds` 480 with 20 % margin stay,
-judged by the same step over the same span. They fail a pull request long before the cap is near.
+judged by the same step over the same span. Over them the step writes a warning annotation and a
+line in the summary, long before the cap is near; it does not fail `check`. The cap is the one hard
+time limit (MaPa, 25.11.2026, D24). Without `hot-path-seconds` the legacy `pipeline budget` job
+still fails over the budget, unchanged (D8).
 
 **Timeouts are a backstop, not the cap.** Every job of a hot path run that runs the caller's code
 has `timeout-minutes: 10`, of a full run 60, and `check` 5; a caller cannot change them. They end
@@ -562,7 +565,9 @@ Details, in the order of the file:
         <cap> s (TST-018)`.
      6. The early warning, only when the budget of the run's kind is above 0: `cold` when the test
         job or `image-build` reports `cold`; `elapsed` above the budget plus
-        `budget-margin-percent`: fail with today's message.
+        `budget-margin-percent`: a `core.warning` with today's message and `; a warning, the cap of
+        <cap> s is the limit`, and the summary's verdict line says `over it, a warning`. It never
+        fails the step (D24).
 7. **`budget` job.** Only the `if` changes. A caller without `hot-path-seconds` keeps today's job,
    span, runner and verdict.
 8. **Compatibility**, what a caller that sets none of the new inputs sees, all of it: `check`
@@ -1004,7 +1009,7 @@ Verification, each claim with the run that proves it:
 | V1 | a caller without new inputs is unaffected on a pull request | a throwaway draft pull request in one library and one in holo with only the pin moved to the WP1 branch: same jobs, same check names, `pipeline budget` on `ubuntu-latest` with the same verdict; closed unmerged |
 | V2 | the image is built on a pull request and nothing is pushed | holo draft pull request: `build the image` green, an OCI tarball with both platforms in the log, no new version of the package in ghcr.io |
 | V3 | the compile cache mount works on both runner kinds | on each kind (`CI_RUNNER` set and unset; they use different cache stores), the first run ever of `build the image`, when no `image-mounts` entry exists at all: it restores nothing, reports `cold`, extracts a non-empty directory (the file count in the log) and saves; the second push restores it into a fresh builder, reports `warm`, and its `go build` steps in the BuildKit log take under a quarter of the first's. Failing on the self-hosted runners: fallback chain of section 5 |
-| V4 | a pull request that breaks the budget cannot merge | proven on holo for the messages and the red check; holo is private on the free plan, where no check can be required, so the blocked merge is proven on the first repository that can require checks. Throwaway commits on the draft pull request, branch protection requiring `check` where available: (a) `hot-path-seconds: 60`: the step `Hot path budget` fails with the cap message, `check` fails, merge blocked; (b) the same with both budgets removed: still fails (the cap alone); (c) "re-run failed jobs" on (a): still red with the re-run message, and after a first attempt that was cancelled before `check` judged: red with the no-verdict message; (g) all checks green and the run cancelled while `image` waits: `check` red, never green without the tags; (d) `hot-path-seconds: 900`: the org cap message; (e) `full: true` on the pull request with `hot-path-seconds: 60`: still capped, timeouts still 10 minutes; (f) a recipe that sleeps 11 minutes: cut at 10 minutes, `check` fails |
+| V4 | a pull request that breaks the budget cannot merge | proven on holo for the messages and the red check; holo is private on the free plan, where no check can be required, so the blocked merge is proven on the first repository that can require checks. Throwaway commits on the draft pull request, branch protection requiring `check` where available: (a) `hot-path-seconds: 60`: the step `Hot path budget` fails with the cap message, `check` fails, merge blocked; (b) the same with both budgets removed: still fails (the cap alone), and with `hot-path-seconds: 600` and `budget-warm-seconds: 60`: a warning annotation, `check` green; (c) "re-run failed jobs" on (a): still red with the re-run message, and after a first attempt that was cancelled before `check` judged: red with the no-verdict message; (g) all checks green and the run cancelled while `image` waits: `check` red, never green without the tags; (d) `hot-path-seconds: 900`: the org cap message; (e) `full: true` on the pull request with `hot-path-seconds: 60`: still capped, timeouts still 10 minutes; (f) a recipe that sleeps 11 minutes: cut at 10 minutes, `check` fails |
 | V5 | journeys are selected by the change | throwaway commits on the draft pull request: a Go file only (smoke journeys), one file below `ui/src/pages/Users` (smoke plus `accounts.spec.ts`), one below `ui/src/ui` (all 23), `changelog/0.1.md` (smoke plus `operations.spec.ts`); the job log shows the pattern and Playwright's count |
 | V6 | the browser job skips, caches and shards completely | two docs-only commits in a row: the first runs the smoke selection and records it, the second prints the skip; the second run restores Chromium (`cache-hit`), no download in the log; one commit with `browser-shards: 2`: two jobs, their journey counts add up to the unsharded count |
 | V7 | vulncheck and the derivation check leave the hot path | a commit that touches neither `go.mod` nor the derive inputs: both print their skip, and the derivation job's log shows no derivation; a commit that touches `derive/domain-words.txt`: the derivation check runs |
@@ -1153,6 +1158,7 @@ govengers/holo
 | D21 | the record key hashes the binaries the journeys execute, built after the frontend | the harness's Go tools and their dependencies are inputs too; one list then serves selection and key |
 | D22 | green-run records are carried only in hot path mode | a caller without new inputs must not start skipping in CI what its recipes skip locally |
 | D23 | per-test time budget is a report, not a gate | MaPa, 25.11.2026: a wall-clock limit per test on shared runners is noise and blocks merges the cap allows |
+| D24 | the early warning warns, it does not fail | MaPa, 25.11.2026: the cap is the one hard time limit |
 | D15 | `workflow_dispatch` runs the full suite; one concurrency group per ref and event | a fix is confirmed without waiting a night, and a full run never delays a push |
 | D16 | holo keeps the recipe name `ui-e2e`; the workflow takes the name as input `browser` | recipes see `FULL`, as the extra recipes do; no rename across holo's docs |
 | D17 | library budget from the job's own clock | one job, no API call, no new permission |
