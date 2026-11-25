@@ -139,8 +139,8 @@ test('hot path: a partial re-run repeats the verdict of the attempt before', asy
     [missing, 'success', 'success', []],
     [carried, 'success', 'failure', [failedJobs]],
     [missing, 'success', 'failure', [failedJobs]],
-    [carried, 'failure', 'success', ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
-    [carried, 'failure', 'failure', ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'failure', 'success', ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
+    [carried, 'failure', 'failure', ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs']],
     [carried, 'skipped', 'failure', ['hot path: no verdict of a complete attempt; re-run all jobs']],
     [carried, 'cancelled', 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
     [carried, undefined, 'success', ['hot path: no verdict of a complete attempt; re-run all jobs']],
@@ -156,7 +156,7 @@ test('hot path: expected jobs follow the needs, a skipped need expects nothing',
   // On a push the image job is expected too; here it did not run again.
   const needs = { ...prNeeds, image: success }
   const attempts = { 1: { started: 0, readable: true, jobs: [checkJob(400, 'failure')] }, 2: { started: 1000, readable: true, jobs: allJobs(1000) } }
-  assert.match((await checkRun({ attempts, needs, now: 1100, event: 'push' })).failed[0], /^hot path: attempt 1 broke the budget/)
+  assert.match((await checkRun({ attempts, needs, now: 1100, event: 'push' })).failed[0], /^hot path: attempt 1 broke the cap/)
   // Without recipes and browser jobs, the remaining jobs are complete.
   const fewer = { ...prNeeds, recipes: skipped, browser: skipped }
   const jobs = allJobs(1000).filter((j) => !/just|browser/.test(j.name))
@@ -178,7 +178,7 @@ test('hot path: with two calls of the workflow, only this call\'s jobs and verdi
   const earlier = [...other([checkJob(400, 'success')]), checkJob(400, 'failure')]
   const attempts = { 1: { started: 0, readable: true, jobs: [...allJobs(0), ...earlier] }, 2: { started: 1000, readable: true, jobs } }
   assert.deepEqual((await checkRun({ attempts, now: 1100 })).failed,
-    ['hot path: attempt 1 broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs'])
+    ['hot path: attempt 1 broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs'])
   // Every job of this call ran again: judged anew, whatever the other call did.
   const complete = { ...attempts, 2: { started: 1000, readable: true, jobs: [...allJobs(1000), self] } }
   assert.deepEqual((await checkRun({ attempts: complete, now: 1100 })).failed, [])

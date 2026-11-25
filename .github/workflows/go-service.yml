@@ -10,7 +10,7 @@
 # is a hot path run. The image is built beside the checks (pull requests: every platform exported, nothing pushed;
 # pushes: pushed by digest, untagged), and the image job only tags and attests that digest once every check passed.
 # check judges the run from its start to check's last step against hot-path-seconds (at most 600, 60 s less on a
-# pull request) and the warm and cold budgets. Jobs that run the repository's code time out after 10 minutes on a
+# pull request) and warns over the warm and cold budgets. Jobs that run the repository's code time out after 10 minutes on a
 # hot path run and after 60 on any other run; the lint, recipe and browser jobs carry their green-run records.
 #
 # Contract with the calling repo: the justfile recipes of go-library.yml (govengers/standards templates/service),
@@ -723,7 +723,7 @@ jobs:
                 const conclusion = (name) => earlier?.steps?.find((step) => step.name === name)?.conclusion
                 const verdict = conclusion('Hot path budget')
                 if (verdict === 'failure') {
-                  return core.setFailed(`hot path: attempt ${attempt - 1} broke the budget and this re-run did not repeat every job; make the pipeline faster or re-run all jobs`)
+                  return core.setFailed(`hot path: attempt ${attempt - 1} broke the cap and this re-run did not repeat every job; make the pipeline faster or re-run all jobs`)
                 }
                 if (verdict !== 'success') return core.setFailed('hot path: no verdict of a complete attempt; re-run all jobs')
                 if (conclusion('Every job passed or was skipped by its input') !== 'success') {
