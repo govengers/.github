@@ -1,24 +1,41 @@
 name: CI
 
+# The govengers library pipeline (go-library.yml): every pull request and push runs the library's own justfile
+# recipes, the changed packages only, within budget-seconds of the check job's own steps (TST-018). Nightly, on
+# demand (Actions, Run workflow) and on v* tags: every test, uncached; a red nightly or dispatched run opens an issue
+# for the logins in CI_ALERT_ASSIGNEES (TST-021).
 on:
   push:
     branches: [$default-branch]
     tags: ["v*"]
   pull_request:
   schedule:
-    - cron: "17 2 * * *" # nightly and on v* tags: every test, uncached
+    - cron: "17 2 * * *" # nightly, on demand and on v* tags: every test, uncached
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }} # a full run and a push never wait for each other
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   go-library:
     uses: govengers/.github/.github/workflows/go-library.yml@v1
     with:
-      full: ${{ github.event_name == 'schedule' || startsWith(github.ref, 'refs/tags/v') }}
+      full: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+      budget-seconds: 300 # fails a run that is not full over 5 minutes of the check job's steps
     permissions:
       contents: write # the badges job pushes test and coverage badges to the badges branch
+
+  alert:
+    needs: go-library
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    uses: govengers/.github/.github/workflows/nightly-alert.yml@v1
+    with:
+      result: ${{ needs.go-library.result }}
+      assignees: ${{ vars.CI_ALERT_ASSIGNEES }}
+    permissions:
+      issues: write # the issue of a red full run
+      actions: read # its failed jobs
