@@ -1,6 +1,6 @@
 {
   "name": "govengers Go service",
-  "description": "Lint, unit tests of changed packages, end-to-end tests unless unchanged, govulncheck, optional TypeScript tests and extra recipes in parallel jobs with per-job caches, a pipeline time budget, badges, then an attested multi-arch image on ghcr.io, via the shared govengers workflow.",
+  "description": "Lint, unit tests of changed packages, end-to-end tests unless unchanged, govulncheck, optional TypeScript tests, extra recipes and browser journeys in parallel jobs with per-job caches, the multi-arch image built beside the checks, a 10-minute hot path cap, badges, an attested image on ghcr.io and an issue for a red nightly run, via the shared govengers workflow.",
   "categories": [
     "Go"
   ],
