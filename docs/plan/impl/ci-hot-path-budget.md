@@ -973,6 +973,37 @@ between a pull request and the push of the same commit, and corrected in `go-ser
 off by more than 15 s. A correction is a commit in `govengers/.github`; holo re-pins to it in the
 same step, and that commit, not WP1's, is the one `v1` moves to.
 
+**V8, first run (holo run 45623156737, 25.11.2026, fuji runners): 827 s, over the cap.** Every
+check green, the image tagged, `check` red. Where the time went:
+
+| Job, step | Time |
+|-----------|------|
+| `build the image` 13:24:17 to 13:32:56 | 519 s |
+| setup-buildx: Docker Hub pull of `moby/buildkit` 7 s, builder container created in 60.6 s | 71 s |
+| build, cold compile cache (main had no `image-mounts` entry yet) | 279 s |
+| extract the compile cache | 97 s |
+| post setup-buildx, removing the builder | 46 s |
+| `build, attest and push the image` 13:33:04 to 13:37:23 | 259 s |
+| setup-buildx: pull 25 s, boot 4 s | 30 s |
+| `tag the digest built beside the checks` | 28 s |
+| post setup-buildx, removing the builder on Docker in Docker | 154 s |
+| `check` 13:37:27 to 13:37:44 | 17 s |
+
+Fixed on `fix/hot-path-buildx-overhead`: the image job starts no builder in hot path mode
+(`imagetools create` needs only the buildx CLI), `build the image` keeps its builder at the end of
+the job (`cleanup: false`, the runners are ephemeral), and `publish badges` runs on the checks'
+runner kind in hot path mode (it failed without steps: GitHub's runners do not start for the private
+repository). Together about 230 s; the next push also finds the compile cache warm. Not changed, a
+lever for later: the 71 s of setup-buildx in `build the image`. The 7 to 25 s are the pull of
+`moby/buildkit` into the empty Docker-in-Docker daemon of every job; the 60.6 s are the creation of
+the builder container, which took 0.8 s in the image job on another pod, so it is not the image but
+the start under load (ten jobs began on the node at once), not decidable from the log. The cheapest
+cut: `driver: docker`, the daemon's own BuildKit. The daemon runs the containerd image store
+(`driver-type: io.containerd.snapshotter.v1`, Docker 29.7.1), so that driver can build every
+platform, export OCI and push by digest; cache mounts then live in the daemon, and the inject and
+extract steps work unchanged (V3 again). It removes the pull, the container and the post step.
+Pre-pulling `moby/buildkit` in the runner image would save only the pull.
+
 ### WP5 After `v1` moved (owner's yes)
 
 - `workflow-templates/go-service.yml`, `workflow-templates/go-library.yml` here, and

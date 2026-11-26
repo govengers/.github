@@ -107,7 +107,8 @@ request exports every platform to an OCI tarball and pushes nothing, so compile 
 its measurement and a broken Dockerfile fails it. A push pushes the image by digest, without a tag; the job
 `build, attest and push the image` tags that digest (`docker buildx imagetools create`) once every check
 passed, and attests the digest that create wrote (its metadata file, not a read-back of the `sha-` tag,
-which a `v*` tag run of the same commit also writes). A deploy follows tags, so nothing deploys an
+which a `v*` tag run of the same commit also writes). The tag job starts no builder: `imagetools create`
+needs only the buildx CLI, and on Docker in Docker booting and removing a container builder cost minutes. A deploy follows tags, so nothing deploys an
 image whose checks failed, and the pipeline takes the longer of checks and build instead of their sum
 (measured on the first service: checks 135 to 160 s, then the image job 428 to 545 s). Without
 `hot-path-seconds` the image job builds and pushes as before. The untagged versions of failed runs stay in

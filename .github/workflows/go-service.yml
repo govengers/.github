@@ -492,8 +492,12 @@ jobs:
     steps:
       - *checkout
 
+      # cleanup: false, the runners are ephemeral: removing the builder nobody reuses cost 46 s on Docker in
+      # Docker (holo run 45623156737).
       - id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          cleanup: false
 
       - if: github.event_name == 'push'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
@@ -809,7 +813,9 @@ jobs:
     name: publish badges
     needs: [lint, test, e2e, typescript, recipes, browser]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-    runs-on: ubuntu-latest
+    # In hot path mode on the checks' runner kind, like check: GitHub's runners need not start for a private
+    # repository. It runs no code of the calling repository.
+    runs-on: ${{ inputs.hot-path-seconds > 0 && ((!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
     concurrency:
       group: badges-${{ github.repository }} # an older run must not overwrite newer badges
       cancel-in-progress: true
@@ -880,7 +886,10 @@ jobs:
             echo "minor=$(is_newest "${minor}.*")"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      # A builder only for the build without hot-path-seconds. imagetools create needs no builder, only the buildx
+      # CLI of the runner image; on Docker in Docker booting and removing a container builder cost minutes.
+      - if: needs.image-build.result == 'skipped'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
