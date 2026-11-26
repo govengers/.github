@@ -53,7 +53,7 @@ The library provides these justfile recipes:
 | `e2e` | `true` | run `just test-e2e` |
 | `badges` | `true` | publish badges on pushes to the default branch |
 | `bun-version` | `""` | install this Bun release before the tests and run `just test-typescript` after the unit tests; empty installs no Bun |
-| `full` | `false` | run `just test-all` and `just test-e2e-all` instead; the starters set it for the nightly schedule and for `v*` tags, so a release is never tested from the cache |
+| `full` | `false` | run `just test-all` and `just test-e2e-all` instead; the starters set it for the nightly schedule, for a dispatched run and for `v*` tags, so a release is never tested from the cache |
 | `budget-seconds` | `0` | fail a run that is not full when the check job's own steps took longer (TST-018); the job then times out after 60 minutes instead of GitHub's 360. The job's own clock: no API call, no permission, no queue time (a library gates no deployment). `0` sets none |
 
 ### Only what changed is tested
@@ -100,7 +100,7 @@ On every push to the default branch the workflow force-pushes three [shields.io 
 | `dockerfile` | `docker/server.Dockerfile` | |
 | `platforms` | `linux/amd64,linux/arm64` | |
 | `e2e` | `true` | run the end-to-end job |
-| `full` | `false` | every test uncached; extra recipes see `FULL=true`; no budget. The starter sets it for the nightly schedule and for `v*` tags |
+| `full` | `false` | every test uncached; extra recipes see `FULL=true`; no budget. The starter sets it for the nightly schedule, for a dispatched run and for `v*` tags |
 | `golangci-lint-version` | `v2.15.0` | installed in the lint job and the recipe jobs |
 | `bun-version` | `""` | Bun on the `PATH` of every job and the TypeScript job; empty installs no Bun |
 | `typescript` | `true` | with `bun-version`, run the TypeScript job; `false` when Bun only serves a tool, e.g. squawk in a recipe |

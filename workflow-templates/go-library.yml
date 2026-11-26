@@ -35,6 +35,9 @@ jobs:
     uses: govengers/.github/.github/workflows/nightly-alert.yml@v1
     with:
       result: ${{ needs.go-library.result }}
+      # Set CI_ALERT_ASSIGNEES before the first nightly (an org variable, or a repository variable for a private
+      # repository on the free plan): without a login that can be assigned the alert job fails every scheduled
+      # and dispatched run.
       assignees: ${{ vars.CI_ALERT_ASSIGNEES }}
     permissions:
       issues: write # the issue of a red full run
