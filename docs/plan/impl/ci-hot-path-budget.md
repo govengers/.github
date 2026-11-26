@@ -1020,6 +1020,14 @@ Pre-pulling `moby/buildkit` in the runner image would save only the pull.
 - `templates/README.md` in the standards: the `ci.yml` row and the hot path and alert bullets.
 - README here: the alert snippet moves from the commit pin to `@v1`.
 
+Done for `govengers/.github` on 26.11.2026, after the owner moved `v1` to 6af8467: branch
+`feat/starters-hot-path`, commits 128069a (service starter), fea993f (library starter) and 5002d53
+(README: the alert snippet at `@v1`, "Versioning" says `v1` carries the hot path). The starters had
+no header comment; each now has one (the cap is the one hard time limit, the budgets warn, the
+nightly alert), and the `.properties.json` descriptions next to them name the cap, the browser
+journeys and the alert. The standards' template `ci.yml` files and `templates/README.md` are WP5
+of `govengers/standards`.
+
 ## 9. Tests, gates and verification
 
 Tests written with the code:
