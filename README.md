@@ -28,7 +28,7 @@ jobs:
       contents: write # the badges job pushes to the badges branch
 ```
 
-The same file is offered as a starter workflow in every org repo under Actions, New workflow.
+The starter workflow offered in every org repo under Actions, New workflow ([workflow-templates/go-library.yml](workflow-templates/go-library.yml)) adds the nightly full run, `budget-seconds: 300` and the nightly alert.
 
 ### Contract
 
@@ -120,7 +120,7 @@ The caller's `ci.yml` puts every run in one concurrency group per ref and event,
 
 ### Hot path
 
-A caller that sets `hot-path-seconds`, e.g. `600`, holds every pipeline that gates a deployment to that many seconds (standards TST-018):
+A caller that sets `hot-path-seconds` (the starter sets `600`) holds every pipeline that gates a deployment to that many seconds (standards TST-018):
 
 - **Hot path run:** a pull request, or a push to the default branch. Nothing else decides it: `full: true` on such a run still gets the cap and the short timeouts. Scheduled and dispatched runs and `v*` tags are full runs, outside the cap.
 - **Span:** from the run's `run_started_at` to the last step of `check`, the required check. `check` needs every job and, on a push, the tag job, so the span ends with the check result on a pull request and with the pushed tags on the default branch. Every wait counts: for runners, for the image job's turn, for `check`'s own runner. No bound on waiting is claimed; the summary shows each job's runner, queue and run seconds, so a breach reads as "the pipeline grew" or as "the runners were busy".
@@ -139,7 +139,7 @@ A caller that sets `hot-path-seconds`, e.g. `600`, holds every pipeline that gat
   alert:
     needs: service
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-    uses: govengers/.github/.github/workflows/nightly-alert.yml@<commit>
+    uses: govengers/.github/.github/workflows/nightly-alert.yml@v1
     with:
       result: ${{ needs.service.result }}
       assignees: ${{ vars.CI_ALERT_ASSIGNEES }}
@@ -148,7 +148,7 @@ A caller that sets `hot-path-seconds`, e.g. `600`, holds every pipeline that gat
       actions: read # its failed jobs
 ```
 
-Until the `v1` tag carries this workflow, `<commit>` is a commit of main that does; the snippet moves to `@v1` with the tag. `CI_ALERT_ASSIGNEES` is a variable of the org or, for a private repository on GitHub Free, of the repository.
+Both starters carry this job. `CI_ALERT_ASSIGNEES` is a variable of the org or, for a private repository on GitHub Free, of the repository.
 
 ### Caches
 
@@ -169,6 +169,6 @@ Both workflows run the jobs that execute the repository's code (library: the one
 
 Libraries and services call `@v1`. Backward-compatible changes move the `v1` tag; a change to the contract above is `v2`. New inputs with defaults that keep the old behaviour and new jobs are backward compatible. Check names are not part of the contract and may change under `v1`, except one per workflow that branch protection can require: `go-service / check / lint, test, e2e, vulncheck` for services (the caller's job id first), `go-library / lint, test, e2e, vulncheck` for libraries.
 
-What a service that sets none of `hot-path-seconds`, `browser` and `browser-shards` sees of the hot path change, all of it: `check` reports after the image job on a push to the default branch or a tag, with the same result as before (pull requests: no difference), `check` no longer declares empty permissions, the two new jobs show as skipped checks (`browser journeys`, `build the image`), as the end-to-end job does with `e2e: false`, and the recipes see two more environment variables: `BASE_SHA` in the recipe jobs, `RECORDS_JOB` in the lint and recipe jobs (harmless unless a recipe already reads a variable of that name). The Go cache path list changed (`postgrestest` left out, see "Caches"), and a cache's version follows its paths, so no existing Go cache matches after the pin: one cold run per job, and a library's pull requests, which never save, stay cold until its next push to the default branch. The image build, the `pipeline budget` job, the e2e job's records, the job names and every other step are unchanged, and the new record steps do not run. A library without `budget-seconds` sees one new step, `Start the budget clock`, and the cold caches after the pin above.
+`v1` carries the hot path mode, the browser job, `budget-seconds` and `nightly-alert.yml` since 26.11.2026 (6af8467); the starters use them. What a service that sets none of `hot-path-seconds`, `browser` and `browser-shards` sees of the hot path change, all of it: `check` reports after the image job on a push to the default branch or a tag, with the same result as before (pull requests: no difference), `check` no longer declares empty permissions, the two new jobs show as skipped checks (`browser journeys`, `build the image`), as the end-to-end job does with `e2e: false`, and the recipes see two more environment variables: `BASE_SHA` in the recipe jobs, `RECORDS_JOB` in the lint and recipe jobs (harmless unless a recipe already reads a variable of that name). The Go cache path list changed (`postgrestest` left out, see "Caches"), and a cache's version follows its paths, so no existing Go cache matches after the pin: one cold run per job, and a library's pull requests, which never save, stay cold until its next push to the default branch. The image build, the `pipeline budget` job, the e2e job's records, the job names and every other step are unchanged, and the new record steps do not run. A library without `budget-seconds` sees one new step, `Start the budget clock`, and the cold caches after the pin above.
 
 Pull requests here run [actionlint](.github/workflows/actionlint.yml) and the tests of the `github-script` steps against fakes of the GitHub API (`node --test test/github-scripts.test.mjs`, with `yq` on the `PATH`). A change to a reusable workflow is verified by a throwaway draft pull request in a library that points its `ci.yml` at the branch (`uses: govengers/.github/.github/workflows/<file>@<branch>`), closed without merging.
